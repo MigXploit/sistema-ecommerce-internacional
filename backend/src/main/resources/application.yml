@@ -1,0 +1,39 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: ecommerce-internacional
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:db_ecommerce_internacional}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: HikariPool-EcommerceIntl
+      maximum-pool-size: 15
+      minimum-idle: 3
+      connection-timeout: 15000
+
+app:
+  seguridad:
+    inactividad-minutos: 15
+    max-intentos-fallidos: 5
+    bloqueo-minutos: 15
+    bcrypt-cost: 12
+  integraciones:
+    timeout-segundos: 15
+    max-reintentos: 3
+  auto-seed-if-empty: true
+
+---
+# Perfil opcional 'demo' en memoria compatible PostgreSQL para pruebas autónomas rápidas
+spring:
+  config:
+    activate:
+      on-profile: demo
+  datasource:
+    url: jdbc:h2:mem:db_ecommerce_internacional;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver

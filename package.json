@@ -1,0 +1,15 @@
+{
+  "name": "sistema-ecommerce-internacional",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Sistema de Comercio Electronico Internacional - INF-241 Grupo 12",
+  "scripts": {
+    "start": "node scripts/dev-runner.mjs demo",
+    "dev": "node scripts/dev-runner.mjs demo",
+    "dev:postgres": "node scripts/dev-runner.mjs postgres",
+    "backend": "java -jar backend/target/ecommerce-internacional.jar --spring.profiles.active=demo",
+    "backend:postgres": "java -jar backend/target/ecommerce-internacional.jar",
+    "frontend": "npm --prefix frontend run dev"
+  }
+}

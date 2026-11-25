@@ -1,0 +1,16 @@
+# Dependencias y compilados locales
+node_modules/
+frontend/node_modules/
+frontend/dist/
+backend/target/
+database/backups/
+
+# Entorno e IDE
+.env
+.env.local
+.idea/
+.vscode/
+*.iml
+*.log
+.DS_Store
+Thumbs.db
