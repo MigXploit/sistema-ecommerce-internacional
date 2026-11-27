@@ -214,10 +214,14 @@ public class ControladorPago {
         }, kh);
 
         int idReembolso = kh.getKey().intValue();
+        String refDemanda = (causal + ": " + req.motivo().trim());
+        if (refDemanda.length() > 190) {
+            refDemanda = refDemanda.substring(0, 190);
+        }
         jdbc.update("""
             INSERT INTO registro_demanda (id_producto, tipo_solicitud, termino_referencia, pais, idioma, moneda)
             VALUES (?, 'RECLAMO_POSTVENTA', ?, 'INTL', ?, ?)
-        """, req.idProductoAfectado(), causal + ": " + req.motivo(), ped.get("idioma_operacion"), ped.get("moneda"));
+        """, req.idProductoAfectado(), refDemanda, ped.get("idioma_operacion"), ped.get("moneda"));
 
         auditoria.registrar("INTERNO".equals(sesion.tipoCuenta()) ? sesion.idSujeto() : null,
                 sesion.identificador(), "SOLICITUD_DEVOLUCION_REGISTRADA",
@@ -301,7 +305,8 @@ public class ControladorPago {
         }
 
         // RN19: Aislar unidades defectuosas en cuarentena (stock_defectuoso) sin devolverlas jamás al stock vendible
-        Integer idProd = (Integer) r.get("id_producto_afectado");
+        Number numProd = (Number) r.get("id_producto_afectado");
+        Integer idProd = numProd != null ? numProd.intValue() : null;
         int unidadesMalas = ((Number) r.get("unidades_defectuosas")).intValue();
         if (idProd != null && unidadesMalas > 0) {
             jdbc.update("UPDATE producto SET stock_defectuoso = stock_defectuoso + ? WHERE id_producto = ?",

@@ -1,25 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import { apiFetch, UsuarioSesion } from './api';
 import { IdiomaCode, MonedaCode, TEXTOS } from './i18n';
+import { HeaderGlobal } from './components/HeaderGlobal';
 import { TiendaPortal } from './TiendaPortal';
 import { PanelOperativo } from './PanelOperativo';
 import { PanelSeguridad } from './PanelSeguridad';
+import { modalErrorValidacionOAduana, toastExito, toastInfo } from './utils/alerts';
 
 const ACCESOS_RAPIDOS_PROTOTIPO = [
-  { label: '🇧🇷 Cliente Brasil (Carla - D13)', id: 'carla.santos@email.br', pass: 'Cliente2026!', tipo: 'CLIENTE' },
-  { label: '🇪🇸 Cliente España (Sofía - Postventa)', id: 'sofia.garcia@importaciones.es', pass: 'Cliente2026!', tipo: 'CLIENTE' },
+  { label: '🇧🇷 Carla Santos (BR • D13)', id: 'carla.santos@email.br', pass: 'Cliente2026!', tipo: 'CLIENTE' },
+  { label: '🇪🇸 Sofía García (ES • Postventa)', id: 'sofia.garcia@importaciones.es', pass: 'Cliente2026!', tipo: 'CLIENTE' },
+  { label: '🇺🇸 John Miller (US • Mayorista)', id: 'john.miller@globalcorp.us', pass: 'Cliente2026!', tipo: 'CLIENTE' },
+  { label: '🇧🇴 Diego Rojas (BO • BOB)', id: 'diego.rojas@comercio.bo', pass: 'Cliente2026!', tipo: 'CLIENTE' },
   { label: '🛡️ Oficial de Seguridad (CU14)', id: 'seguridad', pass: 'Seguridad2026!', tipo: 'INTERNO', sec: true },
   { label: '⚙️ Admin Parámetros (CU13 / RN20)', id: 'admin.parametros', pass: 'AdminParam2026!', tipo: 'INTERNO' },
   { label: '📦 Gestor Catálogo (CU01)', id: 'catalogo', pass: 'Catalogo2026!', tipo: 'INTERNO' },
-  { label: '🔍 Gestor Pedidos / Reembolsos (CU06/11)', id: 'pedidos', pass: 'Pedidos2026!', tipo: 'INTERNO' },
+  { label: '🔍 Gestor Pedidos (CU06/11)', id: 'pedidos', pass: 'Pedidos2026!', tipo: 'INTERNO' },
   { label: '✈️ Logística / Aduana (CU07/08)', id: 'logistica', pass: 'Logistica2026!', tipo: 'INTERNO' },
   { label: '🧾 Facturación (CU09)', id: 'facturacion', pass: 'Factura2026!', tipo: 'INTERNO' },
   { label: '📊 Gerente Reportes (CU12)', id: 'gerencia', pass: 'Gerencia2026!', tipo: 'INTERNO' }
 ];
 
 export default function App() {
-  const [idioma, setIdioma] = useState<IdiomaCode>('ES');
-  const [moneda, setMoneda] = useState<MonedaCode>('USD');
+  const [idioma, setIdiomaState] = useState<IdiomaCode>('ES');
+  const [moneda, setMonedaState] = useState<MonedaCode>('USD');
   const [token, setToken] = useState<string | null>(null);
   const [usuario, setUsuario] = useState<UsuarioSesion | null>(null);
   const [parametros, setParametros] = useState<any>(null);
@@ -46,9 +50,31 @@ export default function App() {
   });
 
   const t = TEXTOS[idioma];
+  const enModoSeguridad = pestana === 'SEGURIDAD' || usuario?.rol === 'OFICIAL_SEGURIDAD';
+
+  // Cambio de idioma con Toast rápido 3.5s (RNF07 / DESIGN.md §5.1)
+  const cambiarIdiomaConToast = (nuevoIdioma: IdiomaCode) => {
+    setIdiomaState(nuevoIdioma);
+    toastInfo(TEXTOS[nuevoIdioma].toastIdiomaCambiado, `LOCALE: ${nuevoIdioma}`);
+  };
+
+  // Cambio de moneda con Toast rápido 3.5s (RNF07 / DESIGN.md §5.1)
+  const cambiarMonedaConToast = (nuevaMoneda: MonedaCode) => {
+    setMonedaState(nuevaMoneda);
+    const tc = parametros?.tasasCambio?.find((x: any) => x.moneda_destino === nuevaMoneda);
+    const tasaStr = nuevaMoneda === 'USD' ? '1.00' : tc ? Number(tc.tasa).toFixed(2) : '';
+    toastInfo(
+      `${TEXTOS[idioma].toastMonedaCambiada} ${nuevaMoneda}`,
+      tasaStr ? `1 USD = ${tasaStr} ${nuevaMoneda}` : nuevaMoneda
+    );
+  };
 
   const notificar = (tipo: 'ok' | 'err', msg: string) => {
-    setAlerta({ tipo, msg });
+    if (tipo === 'ok') {
+      toastExito(msg);
+    } else {
+      setAlerta({ tipo, msg });
+    }
   };
 
   const cargarParametros = async () => {
@@ -56,7 +82,7 @@ export default function App() {
       const p = await apiFetch('/api/parametros/publicos');
       setParametros(p);
     } catch (e: any) {
-      notificar('err', 'No se pudo conectar al backend en http://localhost:8080: ' + e.message);
+      setAlerta({ tipo: 'err', msg: 'No se pudo conectar al backend en http://localhost:8080: ' + e.message });
     }
   };
 
@@ -73,19 +99,28 @@ export default function App() {
       setToken(resp.token);
       setUsuario(resp.usuario);
       setMostrarAuth(false);
+      setAlerta(null);
 
       if (resp.usuario.tipoCuenta === 'CLIENTE') {
-        if (resp.usuario.idioma) setIdioma(resp.usuario.idioma);
-        if (resp.usuario.monedaPreferida) setMoneda(resp.usuario.monedaPreferida);
+        if (resp.usuario.idioma) setIdiomaState(resp.usuario.idioma);
+        if (resp.usuario.monedaPreferida) setMonedaState(resp.usuario.monedaPreferida);
         setPestana('TIENDA');
       } else if (resp.usuario.rol === 'OFICIAL_SEGURIDAD') {
         setPestana('SEGURIDAD');
       } else {
         setPestana('OPERATIVO');
       }
-      notificar('ok', `Sesión autenticada con JWT RS256: ${resp.usuario.nombre} [${resp.usuario.rol}]`);
+      toastExito(
+        `Sesión iniciada: ${resp.usuario.nombre}`,
+        `JWT RS256 • ROL: ${resp.usuario.rol}`
+      );
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        idioma,
+        titulo: 'Autenticación Rechazada (RNF01 / RN18)',
+        mensaje: err.message,
+        codigoRef: identificador
+      });
     }
   };
 
@@ -103,13 +138,21 @@ export default function App() {
       });
       setToken(resp.token);
       setUsuario(resp.usuario);
-      setIdioma(resp.usuario.idioma || 'ES');
-      setMoneda(resp.usuario.monedaPreferida || 'USD');
+      setIdiomaState(resp.usuario.idioma || 'ES');
+      setMonedaState(resp.usuario.monedaPreferida || 'USD');
       setMostrarAuth(false);
       setPestana('TIENDA');
-      notificar('ok', 'Cuenta internacional creada con contraseña hasheada en bcrypt (costo 12).');
+      toastExito(
+        `Cliente internacional registrado (${resp.usuario.pais})`,
+        `${resp.usuario.identificador} • bcrypt cost 12`
+      );
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        idioma,
+        titulo: 'Error en Registro de Cliente (CU02)',
+        mensaje: err.message,
+        codigoRef: regForm.pais
+      });
     }
   };
 
@@ -120,70 +163,34 @@ export default function App() {
     setToken(null);
     setUsuario(null);
     setPestana('TIENDA');
-    notificar('ok', 'Sesión cerrada.');
+    toastInfo('Sesión finalizada correctamente');
   };
 
   return (
     <div>
-      {/* CABECERA GLOBAL CON SELECTOR DINÁMICO DE IDIOMA Y MONEDA */}
-      <header className="topbar">
-        <div>
-          <div className="brand-title">🌐 {t.marca} <span className="badge badge-blue">INF-241 • Grupo 12</span></div>
-          <div className="brand-sub">{t.subtitulo}</div>
-        </div>
+      {/* A. BARRA SUPERIOR GLOBAL ESTANDARIZADA (DESIGN.md §3.A) */}
+      <HeaderGlobal
+        idioma={idioma}
+        moneda={moneda}
+        setIdioma={cambiarIdiomaConToast}
+        setMoneda={cambiarMonedaConToast}
+        usuario={usuario}
+        parametros={parametros}
+        modoSeguridad={enModoSeguridad}
+        onAbrirAuth={() => {
+          setModoAuth('LOGIN');
+          setMostrarAuth(true);
+        }}
+        onCerrarSesion={cerrarSesion}
+      />
 
-        <div className="controls-row">
-          <select
-            style={{ width: 'auto', background: '#1e293b', color: '#fff', borderColor: '#475569' }}
-            value={idioma}
-            onChange={(e) => setIdioma(e.target.value as IdiomaCode)}
-          >
-            <option value="ES">🌐 ES — Español</option>
-            <option value="EN">🌐 EN — English</option>
-            <option value="PT">🌐 PT — Português</option>
-          </select>
-
-          <select
-            style={{ width: 'auto', background: '#1e293b', color: '#fff', borderColor: '#475569' }}
-            value={moneda}
-            onChange={(e) => setMoneda(e.target.value as MonedaCode)}
-          >
-            {parametros?.monedas?.map((m: any) => (
-              <option key={m.codigo_moneda} value={m.codigo_moneda}>
-                💱 {m.codigo_moneda} ({m.simbolo})
-              </option>
-            )) || (
-              <>
-                <option value="USD">💱 USD ($)</option>
-                <option value="BRL">💱 BRL (R$)</option>
-                <option value="BOB">💱 BOB (Bs)</option>
-                <option value="EUR">💱 EUR (€)</option>
-              </>
-            )}
-          </select>
-
-          {usuario ? (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ fontSize: '0.82rem' }}>
-                👤 <b>{usuario.nombre}</b> <span className="badge badge-amber">{usuario.rol}</span>
-              </span>
-              <button className="btn btn-danger" onClick={cerrarSesion}>{t.cerrarSesion}</button>
-            </div>
-          ) : (
-            <button className="btn btn-primary" onClick={() => { setModoAuth('LOGIN'); setMostrarAuth(true); }}>
-              {t.iniciarSesion} / {t.registrarse}
-            </button>
-          )}
-        </div>
-      </header>
-
-      {/* BARRA DE ACCESO RÁPIDO PARA VALIDACIÓN DE ROLES EN DEFENSA DE PROTOTIPO */}
-      <div className="demo-bar">
-        <strong>Cambio rápido de Actor (Prototipo Sección 11.2):</strong>
+      {/* BARRA DE CAMBIO RÁPIDO DE ACTOR (Escenarios D13, CU07, CU11, CU12, CU13, CU14) */}
+      <div className="actor-switcher-bar">
+        <strong style={{ color: 'var(--color-text-muted)' }}>Actor Prototipo:</strong>
         {ACCESOS_RAPIDOS_PROTOTIPO.map((ac) => (
           <button
             key={ac.id}
-            className={`demo-chip ${ac.sec ? 'security' : ''}`}
+            className={`actor-chip ${ac.sec ? 'security' : ''} ${usuario?.identificador === ac.id ? 'active' : ''}`}
             onClick={() => ejecutarLogin(ac.id, ac.pass, ac.tipo)}
           >
             {ac.label}
@@ -191,16 +198,16 @@ export default function App() {
         ))}
       </div>
 
-      <main className="container">
+      <main className="main-container">
         {alerta && (
           <div className={`alert ${alerta.tipo === 'ok' ? 'alert-ok' : 'alert-err'}`}>
             <span>{alerta.msg}</span>
-            <button className="btn btn-outline" style={{ padding: '0.2rem 0.55rem' }} onClick={() => setAlerta(null)}>✕</button>
+            <button className="btn btn-sm btn-outline" onClick={() => setAlerta(null)}>✕</button>
           </div>
         )}
 
-        {/* NAVEGACIÓN PRINCIPAL SEGREGADA */}
-        <div className="nav-tabs">
+        {/* NAVEGACIÓN ENTRE EXPERIENCIAS DIFERENCIADAS (DESIGN.md §1) */}
+        <nav className="nav-tabs">
           <button className={`tab-btn ${pestana === 'TIENDA' ? 'active' : ''}`} onClick={() => setPestana('TIENDA')}>
             🛍️ {t.tienda}
           </button>
@@ -217,7 +224,7 @@ export default function App() {
               🛡️ {t.panelSeguridad}
             </button>
           )}
-        </div>
+        </nav>
 
         {(pestana === 'TIENDA' || pestana === 'MIS_PEDIDOS') && (
           <TiendaPortal
@@ -227,8 +234,12 @@ export default function App() {
             usuario={usuario}
             parametros={parametros}
             vista={pestana === 'MIS_PEDIDOS' ? 'MIS_PEDIDOS' : 'CATALOGO'}
+            onCambiarVista={(v) => setPestana(v)}
             notificar={notificar}
-            pedirLogin={() => { setModoAuth('LOGIN'); setMostrarAuth(true); }}
+            pedirLogin={() => {
+              setModoAuth('LOGIN');
+              setMostrarAuth(true);
+            }}
           />
         )}
 
@@ -255,42 +266,43 @@ export default function App() {
       {mostrarAuth && (
         <div className="modal-backdrop">
           <div className="modal-box">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.8rem' }}>
-              <h3 style={{ margin: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 className="section-subtitle" style={{ margin: 0 }}>
                 {modoAuth === 'LOGIN' ? 'Autenticación Segura (Bcrypt + JWT RS256)' : 'Registro de Cliente Internacional (CU02)'}
               </h3>
-              <button className="btn btn-outline" onClick={() => setMostrarAuth(false)}>✕</button>
+              <button className="btn btn-sm btn-outline" onClick={() => setMostrarAuth(false)}>✕</button>
             </div>
 
-            <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.9rem' }}>
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
               <button className={`btn ${modoAuth === 'LOGIN' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setModoAuth('LOGIN')}>
-                Iniciar Sesión
+                {t.iniciarSesion}
               </button>
               <button className={`btn ${modoAuth === 'REGISTRO' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setModoAuth('REGISTRO')}>
-                Crear Cuenta de Cliente
+                {t.registrarse}
               </button>
             </div>
 
             {modoAuth === 'LOGIN' ? (
-              <form onSubmit={submitLoginManual} style={{ display: 'grid', gap: '0.7rem' }}>
+              <form onSubmit={submitLoginManual} style={{ display: 'grid', gap: '12px' }}>
                 <div>
-                  <label>Tipo de Acceso</label>
+                  <label>Tipo de Cuenta</label>
                   <select value={loginForm.tipoCuenta} onChange={(e) => setLoginForm({ ...loginForm, tipoCuenta: e.target.value })}>
                     <option value="CLIENTE">Cliente Internacional (Correo)</option>
-                    <option value="INTERNO">Personal Interno / Seguridad (Login)</option>
+                    <option value="INTERNO">Personal Interno / Oficial de Seguridad (Login)</option>
                   </select>
                 </div>
                 <div>
                   <label>{loginForm.tipoCuenta === 'CLIENTE' ? 'Correo Electrónico' : 'Login de Usuario (ej. seguridad, ex.operador)'}</label>
                   <input
                     required
+                    className="mono"
                     value={loginForm.identificador}
                     onChange={(e) => setLoginForm({ ...loginForm, identificador: e.target.value })}
                     placeholder={loginForm.tipoCuenta === 'CLIENTE' ? 'carla.santos@email.br' : 'seguridad'}
                   />
                 </div>
                 <div>
-                  <label>Contraseña (bloqueo tras 5 intentos fallidos - RNF01)</label>
+                  <label>Contraseña (bloqueo automático tras 5 intentos fallidos - RNF01)</label>
                   <input
                     type="password"
                     required
@@ -298,10 +310,10 @@ export default function App() {
                     onChange={(e) => setLoginForm({ ...loginForm, clave: e.target.value })}
                   />
                 </div>
-                <button type="submit" className="btn btn-primary">Autenticar</button>
+                <button type="submit" className="btn btn-primary">{t.iniciarSesion}</button>
               </form>
             ) : (
-              <form onSubmit={submitRegistroCliente} style={{ display: 'grid', gap: '0.65rem' }}>
+              <form onSubmit={submitRegistroCliente} style={{ display: 'grid', gap: '12px' }}>
                 <div className="form-grid">
                   <div><label>Nombres</label><input required value={regForm.nombres} onChange={(e) => setRegForm({ ...regForm, nombres: e.target.value })} /></div>
                   <div><label>Apellidos</label><input required value={regForm.apellidos} onChange={(e) => setRegForm({ ...regForm, apellidos: e.target.value })} /></div>
@@ -319,14 +331,14 @@ export default function App() {
                       ))}
                     </select>
                   </div>
-                  <div><label>ID Fiscal (NIT/CPF/EIN/NIF)</label><input required value={regForm.datosFiscales} onChange={(e) => setRegForm({ ...regForm, datosFiscales: e.target.value })} /></div>
+                  <div><label>ID Fiscal (NIT/CPF/EIN/NIF)</label><input className="mono" required value={regForm.datosFiscales} onChange={(e) => setRegForm({ ...regForm, datosFiscales: e.target.value })} /></div>
                 </div>
                 <div className="form-grid">
                   <div><label>Ciudad</label><input required value={regForm.ciudad} onChange={(e) => setRegForm({ ...regForm, ciudad: e.target.value })} /></div>
-                  <div><label>Código Postal</label><input required value={regForm.codigoPostal} onChange={(e) => setRegForm({ ...regForm, codigoPostal: e.target.value })} /></div>
+                  <div><label>Código Postal</label><input className="mono" required value={regForm.codigoPostal} onChange={(e) => setRegForm({ ...regForm, codigoPostal: e.target.value })} /></div>
                 </div>
                 <div><label>Línea de Dirección</label><input required value={regForm.lineaDireccion} onChange={(e) => setRegForm({ ...regForm, lineaDireccion: e.target.value })} /></div>
-                <button type="submit" className="btn btn-emerald">Registrar Cliente y Dirección</button>
+                <button type="submit" className="btn btn-accent">Registrar Cliente y Dirección</button>
               </form>
             )}
           </div>

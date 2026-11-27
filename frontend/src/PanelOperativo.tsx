@@ -1,5 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { apiFetch, UsuarioSesion } from './api';
+import { OperationalTable } from './components/OperationalTable';
+import { ImmutableTag, StatusBadge } from './components/StatusBadge';
+import {
+  modalBloqueoSeguridadInmutabilidad,
+  modalConfirmarAprobacionReembolso,
+  modalErrorValidacionOAduana,
+  modalReembolsoEjecutadoExito,
+  toastExito,
+  toastInfo
+} from './utils/alerts';
 
 interface Props {
   token: string;
@@ -9,6 +19,31 @@ interface Props {
   notificar: (tipo: 'ok' | 'err', msg: string) => void;
 }
 
+const SECCIONES_POR_ROL: Record<string, { id: string; label: string }[]> = {
+  GESTOR_CATALOGO: [
+    { id: 'INVENTARIO', label: '📦 Catálogo y Stock' },
+    { id: 'ALTA_PRODUCTO', label: '➕ Nuevo Producto' }
+  ],
+  GESTOR_PEDIDOS: [
+    { id: 'INSPECCION', label: '🔍 Inspección y Reembolsos' }
+  ],
+  LOGISTICA: [
+    { id: 'GUIAS', label: '✈️ Emisión de Guías (CU07)' },
+    { id: 'TRANSITO', label: '🛃 Tránsito y Aduana (CU08)' }
+  ],
+  FACTURACION: [
+    { id: 'COMPROBANTES', label: '🧾 Facturas y Notas de Crédito' }
+  ],
+  GERENTE: [
+    { id: 'REPORTE_MULTI', label: '📊 Reporte Multidimensional' },
+    { id: 'DEMANDA', label: '📈 Ranking y Solicitudes' }
+  ],
+  ADMINISTRADOR: [
+    { id: 'PAISES_IMPUESTOS', label: '🌍 Países, IVA y Aduana' },
+    { id: 'SEGREGACION', label: '🛡️ Verificación RN20' }
+  ]
+};
+
 export const PanelOperativo: React.FC<Props> = ({
   token,
   usuario,
@@ -17,6 +52,8 @@ export const PanelOperativo: React.FC<Props> = ({
   notificar
 }) => {
   const rol = usuario.rol;
+  const secciones = SECCIONES_POR_ROL[rol] || [{ id: 'DEFAULT', label: rol }];
+  const [seccionActiva, setSeccionActiva] = useState<string>(secciones[0].id);
 
   // Estados por módulo operativo
   const [productos, setProductos] = useState<any[]>([]);
@@ -26,12 +63,14 @@ export const PanelOperativo: React.FC<Props> = ({
   const [estadisticas, setEstadisticas] = useState<any | null>(null);
   const [reporteMulti, setReporteMulti] = useState<any | null>(null);
 
-  // Filtros multidimensionales obligatorios (RF20 / CA-FUNC-10)
+  // Filtros multidimensionales obligatorios (RF20 / CA-FUNC-10 + Rango de fechas DESIGN.md §3.E)
   const [filtros, setFiltros] = useState({
     pais: 'TODOS',
     tipoVenta: 'TODOS',
     idioma: 'TODOS',
-    moneda: 'TODOS'
+    moneda: 'TODOS',
+    fechaDesde: '2026-11-01',
+    fechaHasta: '2026-12-31'
   });
 
   // Formulario Nuevo Producto (CU01)
@@ -64,6 +103,12 @@ export const PanelOperativo: React.FC<Props> = ({
     habilitado: true
   });
 
+  useEffect(() => {
+    const lista = SECCIONES_POR_ROL[rol] || [{ id: 'DEFAULT', label: rol }];
+    setSeccionActiva(lista[0].id);
+    cargarDatosRol();
+  }, [rol, token]);
+
   const cargarDatosRol = async () => {
     try {
       if (rol === 'GESTOR_CATALOGO') {
@@ -91,15 +136,20 @@ export const PanelOperativo: React.FC<Props> = ({
     }
   };
 
-  useEffect(() => {
-    cargarDatosRol();
-  }, [rol, token]);
-
   const consultarReporteFiltrado = async () => {
     try {
-      const qs = new URLSearchParams(filtros);
+      const qs = new URLSearchParams({
+        pais: filtros.pais,
+        tipoVenta: filtros.tipoVenta,
+        idioma: filtros.idioma,
+        moneda: filtros.moneda
+      });
       const rep = await apiFetch(`/api/reportes/multidimensional?${qs.toString()}`, {}, token);
       setReporteMulti(rep);
+      toastInfo(
+        `Reporte multidimensional actualizado`,
+        `${rep.cantidadRegistros} registros • $${Number(rep.totalConsolidadoUsd).toFixed(2)} USD`
+      );
     } catch (e: any) {
       notificar('err', e.message);
     }
@@ -127,17 +177,23 @@ export const PanelOperativo: React.FC<Props> = ({
           ]
         })
       }, token);
-      notificar('ok', resp.mensaje);
+      // Toast rápido 3.5s al guardar producto (CU01 - DESIGN.md §5.1)
+      toastExito(resp.mensaje, `${nuevoProd.codigo} • $${Number(nuevoProd.precioBaseUsd).toFixed(2)} USD`);
       cargarDatosRol();
+      setSeccionActiva('INVENTARIO');
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        mensaje: err.message,
+        codigoRef: 'CU01 / CA-FUNC-01'
+      });
     }
   };
 
   const sincronizarTasas = async () => {
     try {
       const resp = await apiFetch('/api/catalogo/sincronizar-tasas', { method: 'POST' }, token);
-      notificar('ok', resp.mensaje);
+      toastExito(resp.mensaje, 'USD / BRL / BOB / EUR');
+      recargarParametros();
       cargarDatosRol();
     } catch (err: any) {
       notificar('err', err.message);
@@ -150,10 +206,18 @@ export const PanelOperativo: React.FC<Props> = ({
         method: 'POST',
         body: JSON.stringify({ idPedido, operador })
       }, token);
-      notificar('ok', resp.mensaje);
+      // Toast rápido 3.5s con número de guía en JetBrains Mono (CU07)
+      toastExito(
+        `Guía internacional emitida (${resp.operador})`,
+        `${resp.numeroGuia} • Pedido #${idPedido}`
+      );
       cargarDatosRol();
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        titulo: 'Requisitos de Exportación Incompletos (RN14 / RN08)',
+        mensaje: err.message,
+        codigoRef: `Pedido #${idPedido}`
+      });
     }
   };
 
@@ -163,16 +227,32 @@ export const PanelOperativo: React.FC<Props> = ({
         method: 'PATCH',
         body: JSON.stringify({ nuevoEstado, observacionAduana: obs })
       }, token);
-      notificar('ok', resp.mensaje);
+      toastInfo(resp.mensaje, `Envío #${idEnvio} → ${nuevoEstado}`);
       cargarDatosRol();
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        mensaje: err.message,
+        codigoRef: 'D09 / CU08'
+      });
     }
   };
 
-  const resolverDevolucion = async (idReembolso: number, aprobar: boolean) => {
+  const resolverDevolucion = async (solicitud: any, aprobar: boolean) => {
+    // Modal con confirmación explícita antes de aprobar/rechazar reembolso y cuarentena (CU06 / RN10 / RN19)
+    const confirmado = await modalConfirmarAprobacionReembolso({
+      idReembolso: solicitud.id_reembolso,
+      idPedido: solicitud.id_pedido,
+      sku: solicitud.sku_afectado,
+      unidades: solicitud.unidades_defectuosas,
+      monto: solicitud.monto,
+      moneda: solicitud.moneda,
+      topeOriginal: solicitud.monto_pago_original,
+      aprobar
+    });
+    if (!confirmado) return;
+
     try {
-      const resp = await apiFetch(`/api/postventa/gestion/resolver/${idReembolso}`, {
+      const resp = await apiFetch(`/api/postventa/gestion/resolver/${solicitud.id_reembolso}`, {
         method: 'POST',
         body: JSON.stringify({
           aprobar,
@@ -181,18 +261,35 @@ export const PanelOperativo: React.FC<Props> = ({
             : 'Reclamo sin defecto comprobable.'
         })
       }, token);
-      notificar('ok', resp.mensaje);
       cargarDatosRol();
+      if (aprobar && resp.notaCredito) {
+        await modalReembolsoEjecutadoExito({
+          numeroNotaCredito: resp.notaCredito.numero,
+          unidadesAisladas: resp.unidadesAisladasCuarentena,
+          mensaje: resp.mensaje
+        });
+      } else {
+        toastInfo(resp.mensaje, `Solicitud #${solicitud.id_reembolso}`);
+      }
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        titulo: 'Bloqueo de Regla de Reembolso (RN10 / RN19)',
+        mensaje: err.message,
+        codigoRef: `Solicitud #${solicitud.id_reembolso}`
+      });
     }
   };
 
-  const probarInmutabilidadFactura = async (idFactura: number) => {
+  const simularIntentoAlteracionFactura = async () => {
+    const idTarget = facturas[0]?.id_factura || 1;
     try {
-      await apiFetch(`/api/facturacion/gestion/${idFactura}`, { method: 'DELETE' }, token);
+      await apiFetch(`/api/facturacion/gestion/${idTarget}`, { method: 'DELETE' }, token);
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalBloqueoSeguridadInmutabilidad({
+        regla: 'RN16 • INMUTABILIDAD TRIBUTARIA',
+        titulo: 'Alteración o Borrado de Factura Bloqueado',
+        mensaje: err.message
+      });
     }
   };
 
@@ -207,10 +304,13 @@ export const PanelOperativo: React.FC<Props> = ({
           tarifaZonaUsdKg: Number(nuevoPais.tarifaZonaUsdKg)
         })
       }, token);
-      notificar('ok', resp.mensaje);
+      toastExito(resp.mensaje, `${nuevoPais.codigoPais} • IVA ${(Number(nuevoPais.tasaIva) * 100).toFixed(0)}%`);
       recargarParametros();
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        mensaje: err.message,
+        codigoRef: 'CU13 3a'
+      });
     }
   };
 
@@ -218,485 +318,468 @@ export const PanelOperativo: React.FC<Props> = ({
     try {
       await apiFetch('/api/seguridad/usuarios', {}, token);
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalBloqueoSeguridadInmutabilidad({
+        regla: 'RN20 / RNF02 • HTTP 403 FORBIDDEN',
+        titulo: 'Segregación de Seguridad Aplicada',
+        mensaje: err.message
+      });
     }
   };
 
   return (
-    <div>
-      <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
-        <div>
-          <h3 style={{ margin: 0 }}>Panel Operativo Interno — Rol Activo: <span className="badge badge-blue">{rol}</span></h3>
-          <small style={{ color: '#64748b' }}>Operador autenticado: {usuario.nombre} ({usuario.identificador}) • Control de Acceso Basado en Roles (RNF02)</small>
-        </div>
-        <button className="btn btn-outline" onClick={cargarDatosRol}>Refrescar Bandeja</button>
-      </div>
-
-      {/* 1. GESTOR DE CATÁLOGO (CU01) */}
-      {rol === 'GESTOR_CATALOGO' && (
-        <div>
-          <div className="card">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-              <h4 style={{ margin: 0 }}>Catálogo Maestro, Stock Vendible vs. Cuarentena Defectuosa (CU01 / RN19)</h4>
-              <button className="btn btn-emerald" onClick={sincronizarTasas}>Sincronizar Tipos de Cambio (RF12)</button>
-            </div>
-            <table>
-              <thead>
-                <tr>
-                  <th>SKU</th>
-                  <th>Producto (ES)</th>
-                  <th>Partida HS</th>
-                  <th>Peso / Dim.</th>
-                  <th>Base USD</th>
-                  <th>Stock Vendible</th>
-                  <th>Aislado Defectuoso</th>
-                  <th>Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {productos.map((p) => (
-                  <tr key={p.id_producto}>
-                    <td><code>{p.codigo}</code></td>
-                    <td><strong>{p.nombre_localizado}</strong></td>
-                    <td>{p.codigo_arancelario}</td>
-                    <td>{p.peso_kg} kg ({p.dimensiones})</td>
-                    <td>${Number(p.precio_base_usd).toFixed(2)}</td>
-                    <td><span className="badge badge-green">{p.stock} uds</span></td>
-                    <td>
-                      {p.stock_defectuoso > 0
-                        ? <span className="badge badge-red">{p.stock_defectuoso} en cuarentena</span>
-                        : '0'}
-                    </td>
-                    <td>{p.estado ? 'ACTIVO' : 'INACTIVO'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+    <div className="admin-shell">
+      {/* BARRA LATERAL IZQUIERDA FIJA RBAC (Colapsa en horizontal en < 768px - DESIGN.md §3.E / RNF13) */}
+      <aside className="admin-sidebar">
+        <div className="sidebar-role-badge">
+          <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', fontWeight: 700, textTransform: 'uppercase' }}>
+            Módulo Autorizado RBAC
           </div>
+          <div style={{ marginTop: '4px' }}>
+            <StatusBadge estado="APROBADO" texto={rol} />
+          </div>
+          <div style={{ fontSize: '12px', marginTop: '6px', fontWeight: 600 }}>{usuario.nombre}</div>
+          <div className="mono" style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>@{usuario.identificador}</div>
+        </div>
 
+        {secciones.map((sec) => (
+          <button
+            key={sec.id}
+            className={`sidebar-nav-btn ${seccionActiva === sec.id ? 'active' : ''}`}
+            onClick={() => setSeccionActiva(sec.id)}
+          >
+            <span>{sec.label}</span>
+            <span>›</span>
+          </button>
+        ))}
+
+        <button className="btn btn-sm btn-outline" style={{ marginTop: '8px' }} onClick={cargarDatosRol}>
+          ↻ Sincronizar Datos
+        </button>
+      </aside>
+
+      {/* CONTENIDO OPERATIVO PRINCIPAL */}
+      <div>
+        {/* 1. GESTOR DE CATÁLOGO (CU01) */}
+        {rol === 'GESTOR_CATALOGO' && seccionActiva === 'INVENTARIO' && (
+          <OperationalTable
+            titulo="Catálogo Maestro Internacional: Stock Vendible vs. Cuarentena Defectuosa (CU01 / RN19)"
+            subtitulo="Precios convertidos automáticamente a partir de moneda base (USD) y aislamiento de mercadería dañada."
+            accionesCabecera={
+              <>
+                <button className="btn btn-sm btn-accent" onClick={sincronizarTasas}>
+                  💱 Sincronizar Tipos de Cambio (RF12)
+                </button>
+                <button className="btn btn-sm btn-primary" onClick={() => setSeccionActiva('ALTA_PRODUCTO')}>
+                  + Nuevo Producto
+                </button>
+              </>
+            }
+            columnas={[
+              { key: 'codigo', titulo: 'SKU', mono: true },
+              { key: 'nombre_localizado', titulo: 'Producto (ES)', render: (p) => <strong>{p.nombre_localizado}</strong> },
+              { key: 'categoria', titulo: 'Categoría' },
+              { key: 'codigo_arancelario', titulo: 'Partida HS', mono: true },
+              { key: 'peso_kg', titulo: 'Peso / Dim.', mono: true, render: (p) => `${p.peso_kg} kg (${p.dimensiones})` },
+              { key: 'precio_base_usd', titulo: 'Base USD', mono: true, render: (p) => `$${Number(p.precio_base_usd).toFixed(2)}` },
+              { key: 'stock', titulo: 'Stock Vendible', render: (p) => <StatusBadge estado="APROBADO" texto={`${p.stock} uds`} /> },
+              {
+                key: 'stock_defectuoso',
+                titulo: 'Aislado Defectuoso (RN19)',
+                render: (p) =>
+                  p.stock_defectuoso > 0 ? (
+                    <StatusBadge estado="PRODUCTO_DEFECTUOSO" texto={`${p.stock_defectuoso} en cuarentena`} />
+                  ) : (
+                    <span className="mono">0</span>
+                  )
+              },
+              { key: 'estado', titulo: 'Estado', render: (p) => <StatusBadge estado={p.estado ? 'ACTIVO' : 'INACTIVO'} /> }
+            ]}
+            datos={productos}
+          />
+        )}
+
+        {rol === 'GESTOR_CATALOGO' && seccionActiva === 'ALTA_PRODUCTO' && (
           <div className="card">
-            <h4 style={{ marginTop: 0 }}>Registrar Nuevo Producto Internacional Multilenguaje (RF01–RF03)</h4>
-            <form onSubmit={registrarProducto} style={{ display: 'grid', gap: '0.75rem' }}>
+            <h3 className="section-subtitle">Registrar Nuevo Producto Multilenguaje y Multimoneda (RF01–RF03)</h3>
+            <form onSubmit={registrarProducto} style={{ display: 'grid', gap: '16px' }}>
               <div className="form-grid">
-                <div><label>SKU Único</label><input value={nuevoProd.codigo} onChange={(e) => setNuevoProd({ ...nuevoProd, codigo: e.target.value })} required /></div>
+                <div><label>SKU Único</label><input className="mono" value={nuevoProd.codigo} onChange={(e) => setNuevoProd({ ...nuevoProd, codigo: e.target.value })} required /></div>
                 <div><label>Categoría</label><input value={nuevoProd.categoria} onChange={(e) => setNuevoProd({ ...nuevoProd, categoria: e.target.value })} required /></div>
-                <div><label>Peso Físico (kg)</label><input type="number" step="0.01" value={nuevoProd.pesoKg} onChange={(e) => setNuevoProd({ ...nuevoProd, pesoKg: e.target.value })} required /></div>
-                <div><label>Dimensiones cm (LxAxH)</label><input value={nuevoProd.dimensiones} onChange={(e) => setNuevoProd({ ...nuevoProd, dimensiones: e.target.value })} required /></div>
-                <div><label>Código Arancelario HS</label><input value={nuevoProd.codigoArancelario} onChange={(e) => setNuevoProd({ ...nuevoProd, codigoArancelario: e.target.value })} required /></div>
-                <div><label>Precio Base (USD)</label><input type="number" step="0.01" value={nuevoProd.precioBaseUsd} onChange={(e) => setNuevoProd({ ...nuevoProd, precioBaseUsd: e.target.value })} required /></div>
-                <div><label>Stock Vendible</label><input type="number" value={nuevoProd.stock} onChange={(e) => setNuevoProd({ ...nuevoProd, stock: e.target.value })} required /></div>
+                <div><label>Peso Físico (kg)</label><input className="mono" type="number" step="0.01" value={nuevoProd.pesoKg} onChange={(e) => setNuevoProd({ ...nuevoProd, pesoKg: e.target.value })} required /></div>
+                <div><label>Dimensiones cm (LxAxH)</label><input className="mono" value={nuevoProd.dimensiones} onChange={(e) => setNuevoProd({ ...nuevoProd, dimensiones: e.target.value })} required /></div>
+                <div><label>Código Arancelario HS</label><input className="mono" value={nuevoProd.codigoArancelario} onChange={(e) => setNuevoProd({ ...nuevoProd, codigoArancelario: e.target.value })} required /></div>
+                <div><label>Precio Base (USD)</label><input className="mono" type="number" step="0.01" value={nuevoProd.precioBaseUsd} onChange={(e) => setNuevoProd({ ...nuevoProd, precioBaseUsd: e.target.value })} required /></div>
+                <div><label>Stock Vendible</label><input className="mono" type="number" value={nuevoProd.stock} onChange={(e) => setNuevoProd({ ...nuevoProd, stock: e.target.value })} required /></div>
               </div>
               <div className="form-grid">
-                <div><label>Nombre (ES - Base)</label><input value={nuevoProd.nombreEs} onChange={(e) => setNuevoProd({ ...nuevoProd, nombreEs: e.target.value })} /></div>
+                <div><label>Nombre (ES - Base obligatorio RN01)</label><input value={nuevoProd.nombreEs} onChange={(e) => setNuevoProd({ ...nuevoProd, nombreEs: e.target.value })} /></div>
                 <div><label>Name (EN)</label><input value={nuevoProd.nombreEn} onChange={(e) => setNuevoProd({ ...nuevoProd, nombreEn: e.target.value })} /></div>
                 <div><label>Nome (PT)</label><input value={nuevoProd.nombrePt} onChange={(e) => setNuevoProd({ ...nuevoProd, nombrePt: e.target.value })} /></div>
               </div>
-              <div>
-                <button type="submit" className="btn btn-primary">Guardar Producto y Calcular Precios en USD/BRL/BOB/EUR</button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button type="submit" className="btn btn-accent">Guardar Producto y Calcular Precios en USD/BRL/BOB/EUR</button>
+                <button type="button" className="btn btn-outline" onClick={() => setSeccionActiva('INVENTARIO')}>Volver al listado</button>
               </div>
             </form>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* 2. GESTOR DE PEDIDOS Y POSTVENTA (CU06, CU11) */}
-      {rol === 'GESTOR_PEDIDOS' && (
-        <div className="card">
-          <h4 style={{ marginTop: 0 }}>Evaluación de Devoluciones por Productos Defectuosos y Control de Reembolsos (CU11 / CU06)</h4>
-          <p style={{ fontSize: '0.83rem', color: '#475569' }}>
-            Al aprobarse un reclamo por <code>PRODUCTO_DEFECTUOSO</code>, el sistema aísla las unidades dañadas fuera del stock vendible (RN19), ejecuta el reembolso controlado ≤ 100% (RN10) y emite automáticamente la Nota de Crédito vinculada (RN16).
-          </p>
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Pedido / Cliente</th>
-                <th>SKU / Unidades</th>
-                <th>Causal</th>
-                <th>Evidencia</th>
-                <th>Monto Reembolso</th>
-                <th>Estado</th>
-                <th>Acción de Inspección</th>
-              </tr>
-            </thead>
-            <tbody>
-              {solicitudesDev.map((s) => (
-                <tr key={s.id_reembolso}>
-                  <td>#{s.id_reembolso}</td>
-                  <td>Pedido #{s.id_pedido}<br /><small>{s.nombre_cliente}</small></td>
-                  <td><code>{s.sku_afectado || 'N/A'}</code> ({s.unidades_defectuosas} uds)</td>
-                  <td><span className="badge badge-amber">{s.causal_devolucion}</span><br /><small>{s.motivo}</small></td>
-                  <td><code>{s.evidencia_ref || 'SIN EVIDENCIA'}</code></td>
-                  <td><strong>{s.monto} {s.moneda}</strong><br /><small>Tope: {s.monto_pago_original}</small></td>
-                  <td>
-                    <span className={`badge ${s.estado === 'APROBADO' ? 'badge-green' : s.estado === 'PENDIENTE' ? 'badge-amber' : 'badge-red'}`}>
-                      {s.estado}
-                    </span>
-                  </td>
-                  <td>
-                    {s.estado === 'PENDIENTE' ? (
-                      <div style={{ display: 'flex', gap: '0.35rem' }}>
-                        <button className="btn btn-emerald" onClick={() => resolverDevolucion(s.id_reembolso, true)}>
-                          Aprobar, Aislar y Reembolsar
-                        </button>
-                        <button className="btn btn-danger" onClick={() => resolverDevolucion(s.id_reembolso, false)}>
-                          Rechazar
-                        </button>
-                      </div>
-                    ) : (
-                      <small style={{ color: '#64748b' }}>Dictaminado</small>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* 3. RESPONSABLE DE LOGÍSTICA (CU07, CU08) */}
-      {rol === 'LOGISTICA' && (
-        <div>
-          <div className="card">
-            <h4 style={{ marginTop: 0 }}>Bandeja de Pedidos Pagados Listos para Emisión de Guía en Un Clic (CU07 / RN08 / RN14)</h4>
-            {bandejaLog.pendientesGuia.length === 0 ? (
-              <p style={{ color: '#64748b', fontSize: '0.85rem' }}>No hay pedidos pendientes de emisión de guía internacional.</p>
-            ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Pedido</th>
-                    <th>Cliente / Destino</th>
-                    <th>Peso Tasable</th>
-                    <th>Flete</th>
-                    <th>Emisión Directa con Operador</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bandejaLog.pendientesGuia.map((p) => (
-                    <tr key={p.id_pedido}>
-                      <td><strong>#{p.id_pedido}</strong> ({p.estado})</td>
-                      <td>{p.nombre_cliente} — {p.ciudad}, <b>{p.pais_destino}</b></td>
-                      <td>{p.peso_tasable} kg</td>
-                      <td>{p.costo_envio} {p.moneda}</td>
-                      <td style={{ display: 'flex', gap: '0.4rem' }}>
-                        <button className="btn btn-primary" onClick={() => emitirGuiaUnClic(p.id_pedido, 'Courier Global Express')}>
-                          Emitir Guía Courier Global (1 clic)
-                        </button>
-                        <button className="btn btn-emerald" onClick={() => emitirGuiaUnClic(p.id_pedido, 'DHL Express International')}>
-                          Emitir Guía DHL Express
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          <div className="card">
-            <h4 style={{ marginTop: 0 }}>Control de Tránsito Internacional e Inspección Aduanera (CU08 / Diagrama D09)</h4>
-            <table>
-              <thead>
-                <tr>
-                  <th>Guía (Tracking)</th>
-                  <th>Pedido / Destino</th>
-                  <th>Operador</th>
-                  <th>Estado Actual</th>
-                  <th>Simular Hito Logístico / Aduana</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bandejaLog.despachos.map((e) => (
-                  <tr key={e.id_envio}>
-                    <td><code>{e.numero_guia}</code><br /><small>{e.etiqueta_exportacion}</small></td>
-                    <td>Pedido #{e.id_pedido} → {e.ciudad} ({e.pais_destino})</td>
-                    <td>{e.operador}</td>
-                    <td><span className="badge badge-blue">{e.estado}</span></td>
-                    <td style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-                      {e.estado === 'EN_TRANSITO' && (
-                        <>
-                          <button className="btn btn-amber" onClick={() => avanzarEstadoEnvio(e.id_envio, 'EN_ADUANA', 'Ingreso a revisión aduanera en país destino')}>
-                            Ingresar a Aduana
-                          </button>
-                          <button className="btn btn-emerald" onClick={() => avanzarEstadoEnvio(e.id_envio, 'ENTREGADO', 'Recepción final confirmada por destinatario')}>
-                            Confirmar Entrega
-                          </button>
-                        </>
-                      )}
-                      {e.estado === 'EN_ADUANA' && (
-                        <>
-                          <button className="btn btn-primary" onClick={() => avanzarEstadoEnvio(e.id_envio, 'EN_TRANSITO', 'Mercancía liberada por aduana nacional')}>
-                            Liberar Aduana → Tránsito
-                          </button>
-                          <button className="btn btn-danger" onClick={() => avanzarEstadoEnvio(e.id_envio, 'DEVUELTO', 'Importación rechazada por aduana')}>
-                            Rechazo Aduanero
-                          </button>
-                        </>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* 4. RESPONSABLE DE FACTURACIÓN (CU09) */}
-      {rol === 'FACTURACION' && (
-        <div className="card">
-          <h4 style={{ marginTop: 0 }}>Registro Inmutable de Facturas Comerciales y Notas de Crédito (CU09 / RN15 / RN16)</h4>
-          <table>
-            <thead>
-              <tr>
-                <th>Tipo</th>
-                <th>Número</th>
-                <th>Pedido / Cliente</th>
-                <th>País / ID Fiscal</th>
-                <th>Subtotal / Impuestos</th>
-                <th>Total</th>
-                <th>Vinculación / Prueba RN16</th>
-              </tr>
-            </thead>
-            <tbody>
-              {facturas.map((f) => (
-                <tr key={f.id_factura}>
-                  <td>
-                    <span className={`badge ${f.tipo_documento === 'NOTA_CREDITO' ? 'badge-amber' : 'badge-green'}`}>
-                      {f.tipo_documento}
-                    </span>
-                  </td>
-                  <td><code>{f.numero}</code></td>
-                  <td>Pedido #{f.id_pedido} — {f.nombre_cliente}</td>
-                  <td>{f.pais} ({f.datos_fiscales_cliente})</td>
-                  <td>{f.subtotal} + {f.impuestos} {f.moneda}</td>
-                  <td><strong>{f.total} {f.moneda}</strong></td>
-                  <td>
-                    {f.factura_origen_numero ? (
-                      <small>Ajusta a <code>{f.factura_origen_numero}</code></small>
-                    ) : (
-                      <button className="btn btn-outline" onClick={() => probarInmutabilidadFactura(f.id_factura)}>
-                        Probar Bloqueo Borrado (RN16)
+        {/* 2. GESTOR DE PEDIDOS Y POSTVENTA (CU06, CU11) */}
+        {rol === 'GESTOR_PEDIDOS' && (
+          <OperationalTable
+            titulo="Inspección de Devoluciones por Productos Defectuosos y Control de Reembolsos (CU11 / CU06)"
+            subtitulo="RN10 y RN19: Verifica evidencia obligatoria, aísla unidades dañadas fuera del stock vendible, reembolsa ≤ 100% y dispara Nota de Crédito."
+            columnas={[
+              { key: 'id_reembolso', titulo: 'ID', mono: true, render: (s) => `#${s.id_reembolso}` },
+              {
+                key: 'id_pedido',
+                titulo: 'Pedido / Cliente',
+                render: (s) => (
+                  <div>
+                    <strong className="mono">Pedido #{s.id_pedido}</strong>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{s.nombre_cliente}</div>
+                  </div>
+                )
+              },
+              {
+                key: 'sku_afectado',
+                titulo: 'SKU / Unidades',
+                mono: true,
+                render: (s) => `${s.sku_afectado || 'N/A'} (${s.unidades_defectuosas} uds)`
+              },
+              {
+                key: 'causal_devolucion',
+                titulo: 'Causal y Motivo',
+                render: (s) => (
+                  <div>
+                    <StatusBadge estado={s.causal_devolucion} />
+                    <div style={{ fontSize: '11px', marginTop: '3px' }}>{s.motivo}</div>
+                  </div>
+                )
+              },
+              {
+                key: 'evidencia_ref',
+                titulo: 'Evidencia (RN19)',
+                mono: true,
+                render: (s) => s.evidencia_ref || 'SIN EVIDENCIA'
+              },
+              {
+                key: 'monto',
+                titulo: 'Reembolso / Tope',
+                mono: true,
+                render: (s) => (
+                  <div>
+                    <strong>{Number(s.monto).toFixed(2)} {s.moneda}</strong>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Máx: {s.monto_pago_original}</div>
+                  </div>
+                )
+              },
+              { key: 'estado', titulo: 'Dictamen', render: (s) => <StatusBadge estado={s.estado} /> },
+              {
+                key: 'acciones',
+                titulo: 'Acción de Inspección',
+                render: (s) =>
+                  s.estado === 'PENDIENTE' ? (
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button className="btn btn-sm btn-accent" onClick={() => resolverDevolucion(s, true)}>
+                        Aprobar, Aislar y Reembolsar
                       </button>
+                      <button className="btn btn-sm btn-danger" onClick={() => resolverDevolucion(s, false)}>
+                        Rechazar
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="mono" style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Cerrado</span>
+                  )
+              }
+            ]}
+            datos={solicitudesDev}
+          />
+        )}
+
+        {/* 3. RESPONSABLE DE LOGÍSTICA (CU07, CU08) */}
+        {rol === 'LOGISTICA' && seccionActiva === 'GUIAS' && (
+          <OperationalTable
+            titulo="Pedidos Pagados Listos para Emisión de Guía Internacional en 1 Clic (CU07 / RN08 / RN14)"
+            subtitulo="Precondición verificada: Pago APROBADO, peso físico/volumétrico, dimensiones y partida arancelaria HS completos."
+            columnas={[
+              { key: 'id_pedido', titulo: 'Pedido', mono: true, render: (p) => `#${p.id_pedido}` },
+              { key: 'estado', titulo: 'Estado', render: (p) => <StatusBadge estado={p.estado} /> },
+              { key: 'nombre_cliente', titulo: 'Cliente / Destino', render: (p) => `${p.nombre_cliente} — ${p.ciudad} (${p.pais_destino})` },
+              { key: 'peso_tasable', titulo: 'Peso Tasable', mono: true, render: (p) => `${p.peso_tasable} kg` },
+              { key: 'costo_envio', titulo: 'Flete Pactado', mono: true, render: (p) => `${Number(p.costo_envio).toFixed(2)} ${p.moneda}` },
+              {
+                key: 'accion',
+                titulo: 'Emisión Directa en 1 Clic',
+                render: (p) => (
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    <button className="btn btn-sm btn-primary" onClick={() => emitirGuiaUnClic(p.id_pedido, 'Courier Global Express')}>
+                      ✈️ Emitir Guía Internacional (Courier Global)
+                    </button>
+                    <button className="btn btn-sm btn-accent" onClick={() => emitirGuiaUnClic(p.id_pedido, 'DHL Express International')}>
+                      Emitir Guía DHL
+                    </button>
+                  </div>
+                )
+              }
+            ]}
+            datos={bandejaLog.pendientesGuia}
+            emptyMessage="Todos los pedidos pagados cuentan ya con guía internacional emitida."
+          />
+        )}
+
+        {rol === 'LOGISTICA' && seccionActiva === 'TRANSITO' && (
+          <OperationalTable
+            titulo="Control de Tránsito Internacional e Inspección Aduanera (CU08 / Diagrama D09)"
+            subtitulo="Actualización de estados de seguimiento sincronizada con el portal del cliente en su idioma."
+            columnas={[
+              {
+                key: 'numero_guia',
+                titulo: 'Número de Guía',
+                mono: true,
+                render: (e) => (
+                  <div>
+                    <strong>{e.numero_guia}</strong>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{e.etiqueta_exportacion}</div>
+                  </div>
+                )
+              },
+              { key: 'id_pedido', titulo: 'Pedido / Destino', render: (e) => `Pedido #${e.id_pedido} → ${e.ciudad} (${e.pais_destino})` },
+              { key: 'operador', titulo: 'Operador Logístico' },
+              { key: 'estado', titulo: 'Estado Actual', render: (e) => <StatusBadge estado={e.estado} /> },
+              {
+                key: 'hitos',
+                titulo: 'Actualizar Hito Aduanero / Entrega',
+                render: (e) => (
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    {e.estado === 'EN_TRANSITO' && (
+                      <>
+                        <button className="btn btn-sm btn-amber" onClick={() => avanzarEstadoEnvio(e.id_envio, 'EN_ADUANA', 'Ingreso a revisión aduanera en país destino')}>
+                          🛃 Ingresar a Aduana
+                        </button>
+                        <button className="btn btn-sm btn-accent" onClick={() => avanzarEstadoEnvio(e.id_envio, 'ENTREGADO', 'Recepción final confirmada por destinatario')}>
+                          ✓ Confirmar Entrega
+                        </button>
+                      </>
                     )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+                    {e.estado === 'EN_ADUANA' && (
+                      <>
+                        <button className="btn btn-sm btn-primary" onClick={() => avanzarEstadoEnvio(e.id_envio, 'EN_TRANSITO', 'Mercancía liberada por aduana nacional')}>
+                          Liberar Aduana → Tránsito
+                        </button>
+                        <button className="btn btn-sm btn-danger" onClick={() => avanzarEstadoEnvio(e.id_envio, 'DEVUELTO', 'Importación rechazada por aduana')}>
+                          Rechazo Aduanero
+                        </button>
+                      </>
+                    )}
+                    {(e.estado === 'ENTREGADO' || e.estado === 'DEVUELTO') && (
+                      <span className="mono" style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Estado Terminal</span>
+                    )}
+                  </div>
+                )
+              }
+            ]}
+            datos={bandejaLog.despachos}
+          />
+        )}
 
-      {/* 5. GERENTE: ESTADÍSTICAS DE DEMANDA Y REPORTES MULTIDIMENSIONALES (CU12) */}
-      {rol === 'GERENTE' && estadisticas && (
-        <div>
-          <div className="kpi-grid">
-            <div className="kpi-box">
-              <small style={{ color: '#64748b' }}>Ingresos Consolidados (Moneda Base)</small>
-              <div className="kpi-val" style={{ color: '#1d4ed8' }}>${Number(estadisticas.ingresosConsolidadosUsd).toFixed(2)} USD</div>
-            </div>
-            <div className="kpi-box">
-              <small style={{ color: '#64748b' }}>Pedidos Internacionales Operados</small>
-              <div className="kpi-val">{estadisticas.totalPedidosOperados}</div>
-            </div>
-            <div className="kpi-box">
-              <small style={{ color: '#64748b' }}>Tasa de Devolución por Defectos</small>
-              <div className="kpi-val" style={{ color: '#d97706' }}>{estadisticas.tasaDevolucionDefectosPct}%</div>
-            </div>
-          </div>
+        {/* 4. RESPONSABLE DE FACTURACIÓN (CU09 - Inmutabilidad Visual RN16) */}
+        {rol === 'FACTURACION' && (
+          <OperationalTable
+            titulo="Registro Fiscal de Facturas Comerciales y Notas de Crédito Vinculadas (CU09 / RN15 / RN16)"
+            subtitulo="RN16: Todo comprobante emitido es estrictamente de solo lectura; las devoluciones se respaldan con Nota de Crédito."
+            accionesCabecera={
+              <button className="btn btn-audit-probe" onClick={simularIntentoAlteracionFactura}>
+                🧪 Simular intento de alteración (Prueba de auditoría RN16)
+              </button>
+            }
+            columnas={[
+              { key: 'tipo_documento', titulo: 'Tipo', render: (f) => <StatusBadge estado={f.tipo_documento} /> },
+              { key: 'numero', titulo: 'Número Correlativo', mono: true, render: (f) => <strong>{f.numero}</strong> },
+              { key: 'id_pedido', titulo: 'Pedido / Cliente', render: (f) => `Pedido #${f.id_pedido} — ${f.nombre_cliente}` },
+              { key: 'pais', titulo: 'Jurisdicción / ID Fiscal', mono: true, render: (f) => `${f.pais} (${f.datos_fiscales_cliente})` },
+              { key: 'subtotal', titulo: 'Subtotal + Imp.', mono: true, render: (f) => `${Number(f.subtotal).toFixed(2)} + ${Number(f.impuestos).toFixed(2)} ${f.moneda}` },
+              { key: 'total', titulo: 'Total Emitido', mono: true, render: (f) => <strong>{Number(f.total).toFixed(2)} {f.moneda}</strong> },
+              {
+                key: 'inmutabilidad',
+                titulo: 'Control Documental (RN16)',
+                render: (f) => (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' }}>
+                    <ImmutableTag />
+                    {f.factura_origen_numero && (
+                      <span className="mono" style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                        Vinculada a {f.factura_origen_numero}
+                      </span>
+                    )}
+                  </div>
+                )
+              }
+            ]}
+            datos={facturas}
+          />
+        )}
 
-          <div className="form-grid" style={{ marginBottom: '1rem' }}>
-            <div className="card" style={{ marginBottom: 0 }}>
-              <h4 style={{ marginTop: 0 }}>Ranking de Productos Más Demandados (RF24)</h4>
-              <table>
-                <thead>
-                  <tr>
-                    <th>SKU / Producto</th>
-                    <th>Solicitudes / Consultas</th>
-                    <th>Unidades Vendidas</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {estadisticas.rankingProductosDemandados.map((p: any) => (
-                    <tr key={p.id_producto}>
-                      <td><code>{p.codigo}</code> — {p.nombre}</td>
-                      <td><span className="badge badge-purple">{p.solicitudes_clientes} interacciones</span></td>
-                      <td><strong>{p.unidades_vendidas} uds</strong></td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="card" style={{ marginBottom: 0 }}>
-              <h4 style={{ marginTop: 0 }}>Mayores Solicitudes y Búsquedas de Clientes (RF24)</h4>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Tipo</th>
-                    <th>Referencia / Búsqueda</th>
-                    <th>País / Idioma</th>
-                    <th>Frec.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {estadisticas.mayoresSolicitudesClientes.map((m: any, idx: number) => (
-                    <tr key={idx}>
-                      <td><small>{m.tipo_solicitud}</small></td>
-                      <td><strong>{m.referencia}</strong></td>
-                      <td>{m.pais} / {m.idioma}</td>
-                      <td>{m.frecuencia}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div className="card">
-            <h4 style={{ marginTop: 0 }}>Reporte Gerencial Controlado Multidimensional (RF20 / CA-FUNC-10)</h4>
-            <div className="form-grid" style={{ alignItems: 'end', marginBottom: '0.9rem' }}>
-              <div>
-                <label>Filtro País Destino</label>
-                <select value={filtros.pais} onChange={(e) => setFiltros({ ...filtros, pais: e.target.value })}>
-                  <option value="TODOS">TODOS LOS PAÍSES</option>
-                  {parametros?.paises?.map((p: any) => (
-                    <option key={p.codigo_pais} value={p.codigo_pais}>{p.nombre} ({p.codigo_pais})</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label>Filtro Tipo de Venta</label>
-                <select value={filtros.tipoVenta} onChange={(e) => setFiltros({ ...filtros, tipoVenta: e.target.value })}>
-                  <option value="TODOS">TODOS</option>
-                  <option value="MINORISTA">MINORISTA</option>
-                  <option value="MAYORISTA">MAYORISTA</option>
-                  <option value="PROMOCIONAL">PROMOCIONAL</option>
-                </select>
-              </div>
-              <div>
-                <label>Filtro Idioma de Operación</label>
-                <select value={filtros.idioma} onChange={(e) => setFiltros({ ...filtros, idioma: e.target.value })}>
-                  <option value="TODOS">TODOS (ES / EN / PT)</option>
-                  <option value="ES">ES (Español)</option>
-                  <option value="EN">EN (English)</option>
-                  <option value="PT">PT (Português)</option>
-                </select>
-              </div>
-              <div>
-                <label>Filtro Moneda</label>
-                <select value={filtros.moneda} onChange={(e) => setFiltros({ ...filtros, moneda: e.target.value })}>
-                  <option value="TODOS">TODAS</option>
-                  <option value="USD">USD</option>
-                  <option value="BRL">BRL</option>
-                  <option value="BOB">BOB</option>
-                  <option value="EUR">EUR</option>
-                </select>
-              </div>
-              <div>
-                <button className="btn btn-primary" style={{ width: '100%' }} onClick={consultarReporteFiltrado}>
-                  Ejecutar Cruce Multidimensional
-                </button>
-              </div>
-            </div>
-
-            {reporteMulti && (
-              <div>
-                <div style={{ marginBottom: '0.6rem', fontSize: '0.86rem' }}>
-                  Registros coincidentes: <b>{reporteMulti.cantidadRegistros}</b> • Total consolidado en moneda base:{' '}
-                  <span className="badge badge-green">${Number(reporteMulti.totalConsolidadoUsd).toFixed(2)} USD</span>
+        {/* 5. GERENTE: REPORTES MULTIDIMENSIONALES Y ESTADÍSTICAS (CU12) */}
+        {rol === 'GERENTE' && estadisticas && (
+          <div>
+            <div className="kpi-grid">
+              <div className="kpi-box">
+                <small style={{ color: 'var(--color-text-muted)', fontWeight: 600 }}>Ingresos Consolidados (Moneda Base)</small>
+                <div className="kpi-val" style={{ color: 'var(--color-brand)' }}>
+                  ${Number(estadisticas.ingresosConsolidadosUsd).toFixed(2)} USD
                 </div>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Pedido</th>
-                      <th>Cliente</th>
-                      <th>País</th>
-                      <th>Tipo Venta</th>
-                      <th>Idioma</th>
-                      <th>Total Divisa</th>
-                      <th>Equiv. USD</th>
-                      <th>Estado / Factura</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {reporteMulti.registros.map((r: any) => (
-                      <tr key={r.id_pedido}>
-                        <td>#{r.id_pedido}</td>
-                        <td>{r.cliente}</td>
-                        <td>{r.nombre_pais} ({r.pais})</td>
-                        <td><span className="badge badge-purple">{r.tipo_venta}</span></td>
-                        <td>{r.idioma_operacion}</td>
-                        <td>{r.total} {r.moneda}</td>
-                        <td><strong>${Number(r.equivalente_usd).toFixed(2)}</strong></td>
-                        <td>{r.estado} {r.numero_factura ? `• ${r.numero_factura}` : ''}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              </div>
+              <div className="kpi-box">
+                <small style={{ color: 'var(--color-text-muted)', fontWeight: 600 }}>Pedidos Internacionales Operados</small>
+                <div className="kpi-val">{estadisticas.totalPedidosOperados}</div>
+              </div>
+              <div className="kpi-box" style={{ borderLeftColor: 'var(--color-sec-accent)' }}>
+                <small style={{ color: 'var(--color-text-muted)', fontWeight: 600 }}>Tasa de Devolución por Defectos</small>
+                <div className="kpi-val" style={{ color: 'var(--color-sec-accent)' }}>
+                  {estadisticas.tasaDevolucionDefectosPct}%
+                </div>
+              </div>
+            </div>
+
+            {seccionActiva === 'REPORTE_MULTI' && reporteMulti && (
+              <OperationalTable
+                titulo="Reporte Gerencial Controlado Multidimensional (RF20 / CA-FUNC-10)"
+                subtitulo={`Coincidencias exactas: ${reporteMulti.cantidadRegistros} pedidos • Total consolidado en moneda base: $${Number(reporteMulti.totalConsolidadoUsd).toFixed(2)} USD`}
+                filtrosSlot={
+                  <div className="form-grid" style={{ alignItems: 'end' }}>
+                    <div>
+                      <label>País Destino</label>
+                      <select value={filtros.pais} onChange={(e) => setFiltros({ ...filtros, pais: e.target.value })}>
+                        <option value="TODOS">TODOS LOS PAÍSES</option>
+                        {parametros?.paises?.map((p: any) => (
+                          <option key={p.codigo_pais} value={p.codigo_pais}>{p.nombre} ({p.codigo_pais})</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label>Tipo de Venta</label>
+                      <select value={filtros.tipoVenta} onChange={(e) => setFiltros({ ...filtros, tipoVenta: e.target.value })}>
+                        <option value="TODOS">TODOS</option>
+                        <option value="MINORISTA">MINORISTA</option>
+                        <option value="MAYORISTA">MAYORISTA</option>
+                        <option value="PROMOCIONAL">PROMOCIONAL</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label>Idioma Operación</label>
+                      <select value={filtros.idioma} onChange={(e) => setFiltros({ ...filtros, idioma: e.target.value })}>
+                        <option value="TODOS">TODOS (ES / EN / PT)</option>
+                        <option value="ES">ES — Español</option>
+                        <option value="EN">EN — English</option>
+                        <option value="PT">PT — Português</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label>Moneda Cobro</label>
+                      <select value={filtros.moneda} onChange={(e) => setFiltros({ ...filtros, moneda: e.target.value })}>
+                        <option value="TODOS">TODAS</option>
+                        <option value="USD">USD</option>
+                        <option value="BRL">BRL</option>
+                        <option value="BOB">BOB</option>
+                        <option value="EUR">EUR</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label>Rango Fecha Desde</label>
+                      <input type="date" className="mono" value={filtros.fechaDesde} onChange={(e) => setFiltros({ ...filtros, fechaDesde: e.target.value })} />
+                    </div>
+                    <div>
+                      <button className="btn btn-primary" style={{ width: '100%' }} onClick={consultarReporteFiltrado}>
+                        Filtrar Reporte
+                      </button>
+                    </div>
+                  </div>
+                }
+                columnas={[
+                  { key: 'id_pedido', titulo: 'Pedido', mono: true, render: (r) => `#${r.id_pedido}` },
+                  { key: 'cliente', titulo: 'Cliente' },
+                  { key: 'pais', titulo: 'País', render: (r) => `${r.nombre_pais} (${r.pais})` },
+                  { key: 'tipo_venta', titulo: 'Tipo Venta', render: (r) => <StatusBadge estado="PENDIENTE" texto={r.tipo_venta} /> },
+                  { key: 'idioma_operacion', titulo: 'Idioma', mono: true },
+                  { key: 'total', titulo: 'Total Divisa', mono: true, render: (r) => `${Number(r.total).toFixed(2)} ${r.moneda}` },
+                  { key: 'equivalente_usd', titulo: 'Equiv. Base USD', mono: true, render: (r) => <strong>${Number(r.equivalente_usd).toFixed(2)}</strong> },
+                  { key: 'estado', titulo: 'Estado / Factura', render: (r) => <StatusBadge estado={r.estado} texto={`${r.estado} ${r.numero_factura ? `• ${r.numero_factura}` : ''}`} /> }
+                ]}
+                datos={reporteMulti.registros}
+              />
+            )}
+
+            {seccionActiva === 'DEMANDA' && (
+              <div className="form-grid">
+                <OperationalTable
+                  titulo="Ranking de Productos Más Demandados (RF24)"
+                  columnas={[
+                    { key: 'codigo', titulo: 'SKU', mono: true },
+                    { key: 'nombre', titulo: 'Producto', render: (p) => <strong>{p.nombre}</strong> },
+                    { key: 'solicitudes_clientes', titulo: 'Interacciones', mono: true, render: (p) => `${p.solicitudes_clientes} consultas` },
+                    { key: 'unidades_vendidas', titulo: 'Vendidos', mono: true, render: (p) => <strong>{p.unidades_vendidas} uds</strong> }
+                  ]}
+                  datos={estadisticas.rankingProductosDemandados}
+                />
+                <OperationalTable
+                  titulo="Mayores Solicitudes y Búsquedas de Clientes (RF24)"
+                  columnas={[
+                    { key: 'tipo_solicitud', titulo: 'Tipo Evento' },
+                    { key: 'referencia', titulo: 'Referencia / Término', render: (m) => <strong>{m.referencia}</strong> },
+                    { key: 'pais', titulo: 'País / Idioma', mono: true, render: (m) => `${m.pais} / ${m.idioma}` },
+                    { key: 'frecuencia', titulo: 'Frec.', mono: true }
+                  ]}
+                  datos={estadisticas.mayoresSolicitudesClientes}
+                />
               </div>
             )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* 6. ADMINISTRADOR DEL SISTEMA - PARÁMETROS OPERATIVOS SIN SEGURIDAD (CU13, RN20) */}
-      {rol === 'ADMINISTRADOR' && (
-        <div>
-          <div className="card" style={{ borderLeft: '4px solid #dc2626' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.6rem' }}>
-              <div>
-                <h4 style={{ margin: 0 }}>Verificación de Segregación Estricta de Funciones (RN20 / CA-FUNC-12)</h4>
-                <small style={{ color: '#475569' }}>
-                  El rol <code>ADMINISTRADOR</code> configura parámetros comerciales pero tiene prohibido acceder a usuarios, hashes <code>bcrypt</code> o registros de <code>AUDITORIA</code>.
-                </small>
-              </div>
-              <button className="btn btn-danger" onClick={probarViolacionSegregacionRn20}>
-                Intentar Acceder a /api/seguridad/usuarios (Demostrar Bloqueo 403 + Auditoría)
-              </button>
+        {/* 6. ADMINISTRADOR DEL SISTEMA: PARÁMETROS OPERATIVOS SIN SEGURIDAD (CU13, RN20) */}
+        {rol === 'ADMINISTRADOR' && seccionActiva === 'PAISES_IMPUESTOS' && (
+          <div>
+            <div className="card">
+              <h3 className="section-subtitle">Configurar País Destino, IVA y Reglas Aduaneras sin Recompilar (RF22 / RNF09)</h3>
+              <form onSubmit={guardarPaisParametrico} className="form-grid" style={{ alignItems: 'end' }}>
+                <div><label>Código ISO País</label><input className="mono" value={nuevoPais.codigoPais} onChange={(e) => setNuevoPais({ ...nuevoPais, codigoPais: e.target.value })} required /></div>
+                <div><label>Nombre País</label><input value={nuevoPais.nombre} onChange={(e) => setNuevoPais({ ...nuevoPais, nombre: e.target.value })} required /></div>
+                <div><label>Moneda Local</label><input className="mono" value={nuevoPais.monedaLocal} onChange={(e) => setNuevoPais({ ...nuevoPais, monedaLocal: e.target.value })} required /></div>
+                <div><label>Idioma Defecto</label><input className="mono" value={nuevoPais.idiomaDefecto} onChange={(e) => setNuevoPais({ ...nuevoPais, idiomaDefecto: e.target.value })} required /></div>
+                <div><label>Tasa IVA (0 a 1)</label><input className="mono" type="number" step="0.01" value={nuevoPais.tasaIva} onChange={(e) => setNuevoPais({ ...nuevoPais, tasaIva: e.target.value })} required /></div>
+                <div><label>Tarifa Zona USD/kg</label><input className="mono" type="number" step="0.5" value={nuevoPais.tarifaZonaUsdKg} onChange={(e) => setNuevoPais({ ...nuevoPais, tarifaZonaUsdKg: e.target.value })} required /></div>
+                <div><button type="submit" className="btn btn-primary" style={{ width: '100%' }}>Guardar País Paramétrico</button></div>
+              </form>
             </div>
-          </div>
 
+            <OperationalTable
+              titulo="Catálogo Paramétrico de Países, Tasas Impositivas y Restricciones Aduaneras (RN12)"
+              columnas={[
+                { key: 'codigo_pais', titulo: 'ISO', mono: true },
+                { key: 'nombre', titulo: 'País', render: (p) => <strong>{p.nombre}</strong> },
+                { key: 'moneda_local', titulo: 'Moneda / Idioma', mono: true, render: (p) => `${p.moneda_local} / ${p.idioma_defecto}` },
+                { key: 'tasa_iva', titulo: 'Tasa IVA', mono: true, render: (p) => `${(Number(p.tasa_iva) * 100).toFixed(1)}%` },
+                { key: 'tarifa_zona_usd_kg', titulo: 'Tarifa Contingencia', mono: true, render: (p) => `$${Number(p.tarifa_zona_usd_kg).toFixed(2)} USD/kg` },
+                { key: 'categorias_restringidas', titulo: 'Categorías Restringidas', render: (p) => p.categorias_restringidas || 'Ninguna' },
+                { key: 'habilitado', titulo: 'Estado', render: (p) => <StatusBadge estado={p.habilitado ? 'HABILITADO' : 'RECHAZADO'} texto={p.habilitado ? 'HABILITADO' : 'BLOQUEADO RN12'} /> }
+              ]}
+              datos={parametros?.paises || []}
+            />
+          </div>
+        )}
+
+        {rol === 'ADMINISTRADOR' && seccionActiva === 'SEGREGACION' && (
           <div className="card">
-            <h4 style={{ marginTop: 0 }}>Habilitar o Actualizar País Destino e Impuestos sin Recompilar (RF22 / RNF09)</h4>
-            <form onSubmit={guardarPaisParametrico} className="form-grid" style={{ alignItems: 'end' }}>
-              <div><label>Código ISO País</label><input value={nuevoPais.codigoPais} onChange={(e) => setNuevoPais({ ...nuevoPais, codigoPais: e.target.value })} required /></div>
-              <div><label>Nombre País</label><input value={nuevoPais.nombre} onChange={(e) => setNuevoPais({ ...nuevoPais, nombre: e.target.value })} required /></div>
-              <div><label>Moneda Local</label><input value={nuevoPais.monedaLocal} onChange={(e) => setNuevoPais({ ...nuevoPais, monedaLocal: e.target.value })} required /></div>
-              <div><label>Idioma Defecto</label><input value={nuevoPais.idiomaDefecto} onChange={(e) => setNuevoPais({ ...nuevoPais, idiomaDefecto: e.target.value })} required /></div>
-              <div><label>Tasa IVA (0 a 1)</label><input type="number" step="0.01" value={nuevoPais.tasaIva} onChange={(e) => setNuevoPais({ ...nuevoPais, tasaIva: e.target.value })} required /></div>
-              <div><label>Tarifa Zona USD/kg</label><input type="number" step="0.5" value={nuevoPais.tarifaZonaUsdKg} onChange={(e) => setNuevoPais({ ...nuevoPais, tarifaZonaUsdKg: e.target.value })} required /></div>
-              <div><button type="submit" className="btn btn-primary" style={{ width: '100%' }}>Guardar País Paramétrico</button></div>
-            </form>
-
-            <table style={{ marginTop: '1rem' }}>
-              <thead>
-                <tr>
-                  <th>Código</th>
-                  <th>País</th>
-                  <th>Moneda / Idioma</th>
-                  <th>IVA Local</th>
-                  <th>Categorías Restringidas</th>
-                  <th>Estado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {parametros?.paises?.map((p: any) => (
-                  <tr key={p.codigo_pais}>
-                    <td><code>{p.codigo_pais}</code></td>
-                    <td><strong>{p.nombre}</strong></td>
-                    <td>{p.moneda_local} / {p.idioma_defecto}</td>
-                    <td>{(Number(p.tasa_iva) * 100).toFixed(1)}%</td>
-                    <td>{p.categorias_restringidas || 'Ninguna'}</td>
-                    <td>{p.habilitado ? <span className="badge badge-green">HABILITADO</span> : <span className="badge badge-red">BLOQUEADO RN12</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <h3 className="section-subtitle">Verificación de Segregación Estricta de Funciones (RN20 / CA-FUNC-12)</h3>
+            <p style={{ color: 'var(--color-text-muted)' }}>
+              Conforme a <b>RN20</b> y <b>DESIGN.md §4</b>, el rol <code>ADMINISTRADOR</code> opera exclusivamente sobre tablas paramétricas comerciales y no posee controles ni permisos sobre usuarios, hashes <code>bcrypt</code> ni la bitácora <code>AUDITORIA</code>.
+            </p>
+            <button className="btn btn-audit-probe" onClick={probarViolacionSegregacionRn20}>
+              🧪 Simular intento de acceso cruzado a /api/seguridad/usuarios (Demostrar Bloqueo 403 + Auditoría)
+            </button>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };

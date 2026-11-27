@@ -175,11 +175,36 @@ class PrototipoAceptacionTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.notaCredito.tipo_documento").value("NOTA_CREDITO"));
 
-        // 5. Gerente consulta reporte multidimensional filtrado (CU12 / CA-FUNC-10)
+        // 5. Gerente consulta tablero estadístico y reporte multidimensional filtrado (CU12 / CA-FUNC-10)
         String tokenGerente = login("gerencia", "Gerencia2026!", "INTERNO");
+        mvc.perform(get("/api/reportes/estadisticas")
+                        .header("Authorization", "Bearer " + tokenGerente))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.ingresosConsolidadosUsd").exists())
+                .andExpect(jsonPath("$.rankingProductosDemandados").isArray());
+
         mvc.perform(get("/api/reportes/multidimensional?pais=BR&tipoVenta=MINORISTA&idioma=PT&moneda=BRL")
                         .header("Authorization", "Bearer " + tokenGerente))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cantidadRegistros").isNumber());
+
+        // 6. Verificar Bandeja Logística, Facturación Inmutable y sincronización de Catálogo
+        mvc.perform(get("/api/envios/gestion/bandeja")
+                        .header("Authorization", "Bearer " + tokenLog))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.despachos").isArray());
+
+        String tokenFac = login("facturacion", "Factura2026!", "INTERNO");
+        mvc.perform(get("/api/facturacion/gestion")
+                        .header("Authorization", "Bearer " + tokenFac))
+                .andExpect(status().isOk());
+        mvc.perform(delete("/api/facturacion/gestion/1")
+                        .header("Authorization", "Bearer " + tokenFac))
+                .andExpect(status().isConflict());
+
+        String tokenCat = login("catalogo", "Catalogo2026!", "INTERNO");
+        mvc.perform(post("/api/catalogo/sincronizar-tasas")
+                        .header("Authorization", "Bearer " + tokenCat))
+                .andExpect(status().isOk());
     }
 }

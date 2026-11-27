@@ -81,6 +81,13 @@ public class ControladorEnvio {
         if (peds.isEmpty()) return ResponseEntity.notFound().build();
         Map<String, Object> ped = peds.get(0);
 
+        Integer guiaExistente = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM envio WHERE id_pedido = ?", Integer.class, req.idPedido());
+        if (guiaExistente != null && guiaExistente > 0) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "mensaje", "RN13: El pedido #" + req.idPedido() + " ya cuenta con un número de guía único asignado."));
+        }
+
         // RN08: Precondición estricta de Pago APROBADO
         Integer pagosAprobados = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM pago WHERE id_pedido = ? AND estado = 'APROBADO'", Integer.class, req.idPedido());

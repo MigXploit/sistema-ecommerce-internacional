@@ -1,6 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { apiFetch, UsuarioSesion } from './api';
 import { IdiomaCode, MonedaCode, TEXTOS } from './i18n';
+import { ProductCard } from './components/ProductCard';
+import { CheckoutStepper, ItemCarrito } from './components/CheckoutStepper';
+import { ImmutableTag, StatusBadge } from './components/StatusBadge';
+import { OperationalTable } from './components/OperationalTable';
+import {
+  modalConfirmarEnvioReclamo,
+  modalConfirmarPagoCongelado,
+  modalErrorValidacionOAduana,
+  modalExitoReclamo,
+  modalPagoAprobadoExito,
+  toastExito,
+  toastInfo
+} from './utils/alerts';
 
 interface Props {
   idioma: IdiomaCode;
@@ -9,14 +22,12 @@ interface Props {
   usuario: UsuarioSesion | null;
   parametros: any;
   vista: 'CATALOGO' | 'MIS_PEDIDOS';
+  onCambiarVista: (v: 'TIENDA' | 'MIS_PEDIDOS') => void;
   notificar: (tipo: 'ok' | 'err', msg: string) => void;
   pedirLogin: () => void;
 }
 
-interface ItemCarrito {
-  producto: any;
-  cantidad: number;
-}
+const ETAPAS_ENVIO = ['PENDIENTE', 'EN_TRANSITO', 'EN_ADUANA', 'ENTREGADO'];
 
 export const TiendaPortal: React.FC<Props> = ({
   idioma,
@@ -25,6 +36,7 @@ export const TiendaPortal: React.FC<Props> = ({
   usuario,
   parametros,
   vista,
+  onCambiarVista,
   notificar,
   pedirLogin
 }) => {
@@ -32,6 +44,7 @@ export const TiendaPortal: React.FC<Props> = ({
   const [productos, setProductos] = useState<any[]>([]);
   const [busqueda, setBusqueda] = useState('');
   const [categoria, setCategoria] = useState('TODAS');
+  const [precioMax, setPrecioMax] = useState<string>('');
   const [carrito, setCarrito] = useState<ItemCarrito[]>([]);
 
   // Flujo de compra en máximo 4 pasos (RNF12)
@@ -43,6 +56,7 @@ export const TiendaPortal: React.FC<Props> = ({
   const [operadorSel, setOperadorSel] = useState<string>('COURIER_GLOBAL');
   const [cotizacion, setCotizacion] = useState<any | null>(null);
   const [pedidoCreado, setPedidoCreado] = useState<any | null>(null);
+  const [pagoConfirmado, setPagoConfirmado] = useState<any | null>(null);
   const [medioPago, setMedioPago] = useState<'TARJETA' | 'TRANSFERENCIA' | 'BILLETERA_DIGITAL'>('TARJETA');
   const [simularRechazo, setSimularRechazo] = useState(false);
 
@@ -55,6 +69,7 @@ export const TiendaPortal: React.FC<Props> = ({
   const [notificaciones, setNotificaciones] = useState<any[]>([]);
   const [devolucionModal, setDevolucionModal] = useState<any | null>(null);
   const [formDev, setFormDev] = useState({
+    idProductoAfectado: 0,
     causalDevolucion: 'PRODUCTO_DEFECTUOSO',
     unidadesDefectuosas: 1,
     motivo: '',
@@ -68,6 +83,7 @@ export const TiendaPortal: React.FC<Props> = ({
         moneda,
         ...(categoria !== 'TODAS' ? { categoria } : {}),
         ...(busqueda.trim() ? { q: busqueda.trim() } : {}),
+        ...(precioMax.trim() && Number(precioMax) > 0 ? { precioMax: precioMax.trim() } : {}),
         ...(usuario?.pais ? { paisCliente: usuario.pais } : {})
       });
       const data = await apiFetch<any[]>(`/api/catalogo?${qs.toString()}`);
@@ -78,8 +94,32 @@ export const TiendaPortal: React.FC<Props> = ({
   };
 
   useEffect(() => {
-    cargarCatalogo();
-  }, [idioma, moneda, categoria]);
+    if (vista === 'CATALOGO') {
+      cargarCatalogo();
+    }
+  }, [idioma, moneda, categoria, vista]);
+
+  // Al cambiar moneda o idioma, actualizar precios de los productos dentro del carrito sin perderlo (CU03)
+  useEffect(() => {
+    if (productos.length > 0 && carrito.length > 0) {
+      setCarrito((prev) =>
+        prev.map((item) => {
+          const actualizado = productos.find((p) => p.id_producto === item.producto.id_producto);
+          return actualizado ? { ...item, producto: actualizado } : item;
+        })
+      );
+    }
+  }, [productos]);
+
+  // Detección automática de MAYORISTA a partir de 10 unidades (DESIGN.md §3.C Paso 1)
+  useEffect(() => {
+    const totalUds = carrito.reduce((acc, it) => acc + it.cantidad, 0);
+    if (totalUds >= 10 && tipoVenta === 'MINORISTA') {
+      setTipoVenta('MAYORISTA');
+    } else if (totalUds > 0 && totalUds < 10 && tipoVenta === 'MAYORISTA') {
+      setTipoVenta('MINORISTA');
+    }
+  }, [carrito]);
 
   useEffect(() => {
     if (token && usuario?.tipoCuenta === 'CLIENTE') {
@@ -113,40 +153,68 @@ export const TiendaPortal: React.FC<Props> = ({
   };
 
   const agregarAlCarrito = (prod: any) => {
+    setPagoConfirmado(null);
+    const existente = carrito.find((i) => i.producto.id_producto === prod.id_producto);
+    const cantActual = existente ? existente.cantidad : 0;
+
+    if (cantActual + 1 > prod.stock) {
+      modalErrorValidacionOAduana({
+        idioma,
+        titulo: 'Stock Máximo Alcanzado (RN06)',
+        mensaje: `RN06: No es posible agregar más unidades de ${prod.nombre_localizado}. Stock vendible disponible: ${prod.stock} uds.`,
+        codigoRef: prod.codigo
+      });
+      return;
+    }
+
+    apiFetch(`/api/auth/demanda-producto/${prod.id_producto}?tipo=AGREGADO_CARRITO&idioma=${idioma}&moneda=${moneda}`, {
+      method: 'POST'
+    }).catch(() => {});
+
     setCarrito((prev) => {
       const idx = prev.findIndex((i) => i.producto.id_producto === prod.id_producto);
-      const actual = idx >= 0 ? prev[idx].cantidad : 0;
-      if (actual + 1 > prod.stock) {
-        notificar('err', `RN06: Stock máximo disponible alcanzado (${prod.stock} uds).`);
-        return prev;
-      }
-      apiFetch(`/api/auth/demanda-producto/${prod.id_producto}?tipo=AGREGADO_CARRITO&idioma=${idioma}&moneda=${moneda}`, {
-        method: 'POST'
-      }).catch(() => {});
       if (idx >= 0) {
         const copia = [...prev];
-        copia[idx] = { ...copia[idx], producto: prod, cantidad: actual + 1 };
+        copia[idx] = { ...copia[idx], producto: prod, cantidad: copia[idx].cantidad + 1 };
         return copia;
       }
       return [...prev, { producto: prod, cantidad: 1 }];
     });
+
+    // Toast rápido 3.5s (CU03 - DESIGN.md §5.1)
+    toastExito(
+      `${prod.nombre_localizado} ${t.toastCarritoAgregado}`,
+      `${prod.codigo} • ${prod.simboloMoneda} ${Number(prod.precioConvertido).toFixed(2)} ${prod.moneda}`
+    );
   };
 
   const cambiarCantidad = (idProd: number, delta: number) => {
+    const target = carrito.find((i) => i.producto.id_producto === idProd);
+    if (!target) return;
+
+    const nueva = target.cantidad + delta;
+    if (nueva > target.producto.stock) {
+      modalErrorValidacionOAduana({
+        idioma,
+        titulo: 'Límite de Stock Vendible (RN06)',
+        mensaje: `RN06: La cantidad solicitada supera el stock disponible (${target.producto.stock} uds).`,
+        codigoRef: target.producto.codigo
+      });
+      return;
+    }
+
     setCarrito((prev) =>
       prev
-        .map((item) => {
-          if (item.producto.id_producto !== idProd) return item;
-          const nueva = item.cantidad + delta;
-          if (nueva > item.producto.stock) {
-            notificar('err', `RN06: No puede superar el stock disponible (${item.producto.stock}).`);
-            return item;
-          }
-          return { ...item, cantidad: nueva };
-        })
+        .map((item) => (item.producto.id_producto === idProd ? { ...item, cantidad: nueva } : item))
         .filter((i) => i.cantidad > 0)
     );
     setCotizacion(null);
+
+    if (nueva <= 0) {
+      toastInfo(t.toastCarritoEliminado, target.producto.codigo);
+    } else {
+      toastInfo(`${t.toastCarritoActualizado}: ${nueva} uds`, target.producto.codigo);
+    }
   };
 
   const cotizarPaso3 = async () => {
@@ -167,8 +235,17 @@ export const TiendaPortal: React.FC<Props> = ({
       }, token);
       setCotizacion(resp);
       setPasoCheckout(3);
+      toastInfo(
+        `Cotización aduanera calculada (${resp.paisDestino})`,
+        `Total: ${Number(resp.total).toFixed(2)} ${resp.moneda}`
+      );
     } catch (e: any) {
-      notificar('err', e.message);
+      // Modal de restricción aduanera o validación (RN12 / RN06 - DESIGN.md §5.2)
+      await modalErrorValidacionOAduana({
+        idioma,
+        mensaje: e.message,
+        codigoRef: 'RN12 / CU04'
+      });
     }
   };
 
@@ -178,7 +255,11 @@ export const TiendaPortal: React.FC<Props> = ({
       return;
     }
     if (!idDireccionSel) {
-      notificar('err', 'RN06: Seleccione o registre una dirección internacional de envío.');
+      await modalErrorValidacionOAduana({
+        idioma,
+        mensaje: 'RN06: Seleccione o registre una dirección internacional de envío válida.',
+        codigoRef: 'RN06'
+      });
       return;
     }
     try {
@@ -195,14 +276,33 @@ export const TiendaPortal: React.FC<Props> = ({
       }, token);
       setPedidoCreado(resp);
       setPasoCheckout(4);
-      notificar('ok', resp.mensaje);
+      toastExito(
+        `Pedido #${resp.idPedido} confirmado en estado CREADO`,
+        `Congelado (RN02): ${Number(resp.desglose.total).toFixed(2)} ${resp.desglose.moneda}`
+      );
     } catch (e: any) {
-      notificar('err', e.message);
+      await modalErrorValidacionOAduana({
+        idioma,
+        mensaje: e.message,
+        codigoRef: 'RN06 / RN12'
+      });
     }
   };
 
   const ejecutarPagoPaso4 = async () => {
     if (!pedidoCreado || !token) return;
+
+    // Modal de Confirmación de Pago Congelado antes de cobrar (DESIGN.md §5.2 - CU05 / RN02)
+    const confirmado = await modalConfirmarPagoCongelado({
+      idioma,
+      idPedido: pedidoCreado.idPedido,
+      total: pedidoCreado.desglose.total,
+      moneda: pedidoCreado.desglose.moneda,
+      equivalenteUsd: pedidoCreado.desglose.equivalenteUsd,
+      medioPago
+    });
+    if (!confirmado) return;
+
     try {
       const tokenSeguro = simularRechazo
         ? 'tok_rechazar_fondos_demo'
@@ -216,14 +316,31 @@ export const TiendaPortal: React.FC<Props> = ({
           claveIdempotencia: `IDEMP-${pedidoCreado.idPedido}-${simularRechazo ? 'REJ' : 'OK'}`
         })
       }, token);
-      notificar('ok', resp.mensaje);
+
+      setPagoConfirmado(resp);
       setCarrito([]);
       setCotizacion(null);
       setPedidoCreado(null);
       setPasoCheckout(1);
       cargarCatalogo();
+
+      // Modal con ícono animado de éxito mostrando referencia y factura (CU05 / CU09)
+      await modalPagoAprobadoExito({
+        idioma,
+        referenciaPasarela: resp.referenciaPasarela,
+        numeroFactura: resp.factura?.numero || 'EMITIDA',
+        monto: resp.montoCobrado,
+        moneda: resp.moneda,
+        equivalenteUsd: resp.equivalenteBaseUsd
+      });
     } catch (e: any) {
-      notificar('err', e.message);
+      // Modal con ícono animado de error en rechazo de pasarela (CU05 4a)
+      await modalErrorValidacionOAduana({
+        idioma,
+        titulo: 'Cobro Internacional Rechazado (CU05 4a)',
+        mensaje: e.message,
+        codigoRef: e.payload?.referenciaPasarela || 'ESTADO: CREADO'
+      });
     }
   };
 
@@ -239,22 +356,47 @@ export const TiendaPortal: React.FC<Props> = ({
       setDirecciones(dirs);
       if (dirs.length > 0) setIdDireccionSel(dirs[0].id_direccion);
       setMostrarFormDir(false);
-      notificar('ok', 'Dirección postal validada y guardada.');
+      toastExito('Dirección internacional validada y registrada', `${nuevaDir.ciudad} (${nuevaDir.pais})`);
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        idioma,
+        mensaje: err.message,
+        codigoRef: 'CU02 4b / RN12'
+      });
     }
+  };
+
+  const abrirModalDevolucion = (ped: any) => {
+    const primerItem = ped.detalles?.[0];
+    setFormDev({
+      idProductoAfectado: primerItem?.id_producto || 0,
+      causalDevolucion: 'PRODUCTO_DEFECTUOSO',
+      unidadesDefectuosas: 1,
+      motivo: '',
+      evidenciaRef: 'EVID-FOTO-CLIENTE-2026.jpg'
+    });
+    setDevolucionModal(ped);
   };
 
   const enviarSolicitudDevolucion = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!devolucionModal || !token) return;
+
+    const ok = await modalConfirmarEnvioReclamo({
+      idioma,
+      idPedido: devolucionModal.id_pedido,
+      causal: formDev.causalDevolucion,
+      unidades: Number(formDev.unidadesDefectuosas),
+      evidenciaRef: formDev.evidenciaRef
+    });
+    if (!ok) return;
+
     try {
-      const primerItem = devolucionModal.detalles?.[0];
       const resp = await apiFetch('/api/postventa/solicitar-devolucion', {
         method: 'POST',
         body: JSON.stringify({
           idPedido: devolucionModal.id_pedido,
-          idProductoAfectado: primerItem?.id_producto || null,
+          idProductoAfectado: formDev.idProductoAfectado || devolucionModal.detalles?.[0]?.id_producto || null,
           unidadesDefectuosas: Number(formDev.unidadesDefectuosas),
           montoSolicitado: devolucionModal.total,
           causalDevolucion: formDev.causalDevolucion,
@@ -262,20 +404,31 @@ export const TiendaPortal: React.FC<Props> = ({
           evidenciaRef: formDev.evidenciaRef
         })
       }, token);
-      notificar('ok', resp.mensaje);
       setDevolucionModal(null);
       cargarMisPedidos();
+      await modalExitoReclamo(idioma, resp.idReembolso, resp.mensaje);
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        idioma,
+        mensaje: err.message,
+        codigoRef: 'RN19 / CU11'
+      });
     }
   };
+
+  // Validación previa del modal de devolución (DESIGN.md §3.D / RN19)
+  const reclamoListoParaEnviar =
+    formDev.motivo.trim().length >= 5 &&
+    (formDev.causalDevolucion !== 'PRODUCTO_DEFECTUOSO' || formDev.evidenciaRef.trim().length > 0);
 
   if (vista === 'MIS_PEDIDOS') {
     if (!token || usuario?.tipoCuenta !== 'CLIENTE') {
       return (
         <div className="card">
-          <h3>{t.misPedidos}</h3>
-          <p>Inicie sesión como cliente internacional (por ejemplo, <b>Carla Santos</b> de Brasil o <b>Sofía García</b> de España) para ver sus pedidos, seguimiento aduanero, facturas y postventa.</p>
+          <h2 className="view-title" style={{ marginBottom: '8px' }}>{t.misPedidos}</h2>
+          <p style={{ color: 'var(--color-text-muted)' }}>
+            Seleccione un cliente internacional en la barra superior (por ejemplo, <b>Carla Santos</b> de Brasil o <b>Sofía García</b> de España) o inicie sesión para consultar sus pedidos, seguimiento aduanero, facturas inmutables y canal de devoluciones.
+          </p>
           <button className="btn btn-primary" onClick={pedirLogin}>{t.iniciarSesion}</button>
         </div>
       );
@@ -283,12 +436,14 @@ export const TiendaPortal: React.FC<Props> = ({
 
     return (
       <div>
-        <div className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="view-header">
           <div>
-            <h3 style={{ margin: 0 }}>{t.misPedidos} — {usuario.nombre} ({usuario.pais})</h3>
-            <small style={{ color: '#64748b' }}>ID Fiscal: {usuario.datosFiscales} • Seguimiento internacional 24×7 y canal formal de devoluciones (CU08 / CU11)</small>
+            <h1 className="view-title">{t.misPedidos} — {usuario.nombre} ({usuario.pais})</h1>
+            <div style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginTop: '4px' }}>
+              ID Fiscal: <code className="mono">{usuario.datosFiscales}</code> • {t.misPedidosSub}
+            </div>
           </div>
-          <button className="btn btn-outline" onClick={cargarMisPedidos}>Actualizar estado</button>
+          <button className="btn btn-outline" onClick={cargarMisPedidos}>{t.actualizarEstado}</button>
         </div>
 
         {misPedidos.map((ped) => {
@@ -298,69 +453,155 @@ export const TiendaPortal: React.FC<Props> = ({
           } catch {
             eventos = [];
           }
+          const estadoEnvio = ped.envio?.estado || 'PENDIENTE';
+          const idxActual = ETAPAS_ENVIO.indexOf(estadoEnvio);
+
           return (
             <div className="card" key={ped.id_pedido}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '0.5rem', marginBottom: '0.6rem' }}>
-                <div>
-                  <strong>Pedido #{ped.id_pedido}</strong> • <span className="badge badge-blue">{ped.estado}</span>{' '}
-                  <span className="badge badge-purple">{ped.tipo_venta}</span>{' '}
-                  <span className="badge badge-amber">Idioma: {ped.idioma_operacion}</span>
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <strong className="mono" style={{ fontSize: '16px' }}>Pedido #{ped.id_pedido}</strong>
+                  <StatusBadge estado={ped.estado} />
+                  <StatusBadge estado="PENDIENTE" texto={ped.tipo_venta} />
+                  <span className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                    Idioma: {ped.idioma_operacion} • Tasa congelada: {ped.tasa_aplicada}
+                  </span>
                 </div>
-                <div>
-                  <strong>Total congelado: {ped.total} {ped.moneda}</strong> (Subtotal: {ped.subtotal} | Impuestos: {ped.impuestos} | Envío: {ped.costo_envio})
+                <div className="mono" style={{ fontSize: '16px', fontWeight: 800, color: 'var(--color-brand)' }}>
+                  {t.totalCongelado}: {Number(ped.total).toFixed(2)} {ped.moneda}
+                  <div style={{ fontSize: '12px', fontWeight: 500, color: 'var(--color-text-muted)' }}>
+                    Subtotal: {ped.subtotal} | Impuestos: {ped.impuestos} | Envío: {ped.costo_envio}
+                  </div>
                 </div>
               </div>
 
-              <div style={{ fontSize: '0.83rem', color: '#475569', marginBottom: '0.6rem' }}>
-                <strong>Destino:</strong> {ped.linea_direccion}, {ped.ciudad} ({ped.pais_destino}) — CP {ped.codigo_postal} |{' '}
-                <strong>Peso tasable:</strong> {ped.peso_tasable} kg
+              <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', marginBottom: '12px' }}>
+                <strong>Destino:</strong> {ped.linea_direccion}, {ped.ciudad} ({ped.pais_destino}) — CP <code className="mono">{ped.codigo_postal}</code> |{' '}
+                <strong>Peso tasable:</strong> <code className="mono">{ped.peso_tasable} kg</code>
               </div>
 
               {ped.detalles?.length > 0 && (
-                <div style={{ marginBottom: '0.65rem', fontSize: '0.83rem' }}>
+                <div style={{ marginBottom: '16px', fontSize: '13px' }}>
                   <strong>Ítems:</strong>{' '}
-                  {ped.detalles.map((d: any) => `${d.cantidad}x ${d.nombre_producto} [HS ${d.codigo_arancelario}] (${d.precio_unitario} ${ped.moneda})`).join(' • ')}
+                  {ped.detalles.map((d: any) => (
+                    <span key={d.id_detalle} className="mono" style={{ marginRight: '12px' }}>
+                      {d.cantidad}× {d.nombre_producto} [HS {d.codigo_arancelario}] ({d.precio_unitario} {ped.moneda})
+                    </span>
+                  ))}
                 </div>
               )}
 
-              <div className="form-grid" style={{ marginTop: '0.5rem' }}>
-                <div style={{ background: '#f8fafc', padding: '0.65rem', borderRadius: '0.5rem' }}>
-                  <strong>Seguimiento Logístico y Aduana (CU08)</strong>
+              <div className="form-grid">
+                {/* LÍNEA DE TIEMPO VISUAL HORIZONTAL + VERTICAL (DESIGN.md §3.D) */}
+                <div style={{ backgroundColor: 'var(--color-bg)', padding: '16px', borderRadius: '12px', border: '1px solid var(--color-border)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                    <strong>{t.seguimientoTitulo}</strong>
+                    {ped.envio && <StatusBadge estado={ped.envio.estado} />}
+                  </div>
+
                   {ped.envio ? (
-                    <div style={{ marginTop: '0.4rem' }}>
-                      <div>Guía única: <code>{ped.envio.numero_guia}</code> ({ped.envio.operador}) — <span className="badge badge-green">{ped.envio.estado}</span></div>
-                      <div style={{ marginTop: '0.45rem' }}>
+                    <div style={{ marginTop: '8px' }}>
+                      <div className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                        Guía: <b>{ped.envio.numero_guia}</b> • Operador: {ped.envio.operador}
+                      </div>
+
+                      <div className="tracking-steps-bar">
+                        {ETAPAS_ENVIO.map((etapa, i) => {
+                          let cls = '';
+                          if (estadoEnvio === 'DEVUELTO') {
+                            cls = 'returned';
+                          } else if (etapa === estadoEnvio) {
+                            cls = 'current';
+                          } else if (idxActual > i || estadoEnvio === 'ENTREGADO') {
+                            cls = 'reached';
+                          }
+                          return (
+                            <div key={etapa} className={`tracking-stage ${cls}`}>
+                              {etapa}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div style={{ marginTop: '8px' }}>
                         {eventos.map((ev, i) => (
                           <div className="timeline-item" key={i}>
-                            <strong>{ev.estado}</strong> ({ev.fecha}): {ev.detalle}
+                            <strong className="mono">{ev.estado}</strong> <span className="mono">({ev.fecha})</span>: {ev.detalle}
                           </div>
                         ))}
                       </div>
                     </div>
                   ) : (
-                    <p style={{ fontSize: '0.8rem', color: '#64748b', margin: '0.3rem 0 0' }}>En cola de despacho logístico.</p>
+                    <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', margin: '8px 0 0' }}>
+                      Pedido pagado en cola de despacho logístico para generación de guía internacional.
+                    </p>
                   )}
                 </div>
 
-                <div style={{ background: '#f8fafc', padding: '0.65rem', borderRadius: '0.5rem' }}>
-                  <strong>Documentos Tributarios Inmutables (CU09)</strong>
-                  {ped.facturas?.length > 0 ? (
-                    ped.facturas.map((f: any) => (
-                      <div key={f.id_factura} style={{ fontSize: '0.82rem', marginTop: '0.35rem' }}>
-                        <span className={f.tipo_documento === 'NOTA_CREDITO' ? 'badge badge-amber' : 'badge badge-green'}>
-                          {f.tipo_documento}
-                        </span>{' '}
-                        <code>{f.numero}</code> — {f.total} {f.moneda} ({f.estado})
+                {/* DOCUMENTOS TRIBUTARIOS INMUTABLES Y POSTVENTA */}
+                <div style={{ backgroundColor: 'var(--color-bg)', padding: '16px', borderRadius: '12px', border: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                  <div>
+                    <strong>{t.documentosTitulo}</strong>
+                    {ped.facturas?.length > 0 ? (
+                      <div style={{ display: 'grid', gap: '8px', marginTop: '10px' }}>
+                        {ped.facturas.map((f: any) => (
+                          <div
+                            key={f.id_factura}
+                            style={{
+                              display: 'flex',
+                              justifyContent: 'space-between',
+                              alignItems: 'center',
+                              flexWrap: 'wrap',
+                              gap: '8px',
+                              backgroundColor: 'var(--color-surface)',
+                              padding: '8px 12px',
+                              borderRadius: '8px',
+                              border: '1px solid var(--color-border)'
+                            }}
+                          >
+                            <div>
+                              <StatusBadge estado={f.tipo_documento} />{' '}
+                              <code className="mono" style={{ fontWeight: 700 }}>{f.numero}</code>
+                              <div className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                                Total: {Number(f.total).toFixed(2)} {f.moneda}
+                              </div>
+                            </div>
+                            <ImmutableTag label={t.inmutableLabel} />
+                          </div>
+                        ))}
                       </div>
-                    ))
-                  ) : (
-                    <p style={{ fontSize: '0.8rem', color: '#64748b' }}>Pendiente de pago.</p>
+                    ) : (
+                      <p style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>Pendiente de pago.</p>
+                    )}
+                  </div>
+
+                  {ped.reembolsos?.length > 0 && (
+                    <div style={{ marginTop: '12px', borderTop: '1px dashed var(--color-border-strong)', paddingTop: '10px' }}>
+                      <strong style={{ fontSize: '12px' }}>Solicitudes de Devolución / Reembolso (CU11 / CU06):</strong>
+                      {ped.reembolsos.map((r: any) => (
+                        <div
+                          key={r.id_reembolso}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            marginTop: '6px',
+                            fontSize: '12px'
+                          }}
+                        >
+                          <span className="mono">
+                            #{r.id_reembolso} • {r.causal_devolucion} ({Number(r.monto).toFixed(2)} {ped.moneda})
+                          </span>
+                          <StatusBadge estado={r.estado} />
+                        </div>
+                      ))}
+                    </div>
                   )}
 
-                  {ped.estado === 'ENTREGADO' && (
-                    <div style={{ marginTop: '0.65rem' }}>
-                      <button className="btn btn-amber" onClick={() => setDevolucionModal(ped)}>
-                        Reportar Producto Defectuoso / Devolución (CU11)
+                  {ped.estado === 'ENTREGADO' && (!ped.reembolsos || ped.reembolsos.length === 0) && (
+                    <div style={{ marginTop: '16px' }}>
+                      <button className="btn btn-amber" style={{ width: '100%' }} onClick={() => abrirModalDevolucion(ped)}>
+                        ⚠️ {t.reportarDefectoBtn}
                       </button>
                     </div>
                   )}
@@ -371,80 +612,89 @@ export const TiendaPortal: React.FC<Props> = ({
         })}
 
         {notificaciones.length > 0 && (
-          <div className="card">
-            <h4 style={{ marginTop: 0 }}>Bandeja de Notificaciones Automáticas en Idioma del Cliente (CU10 / RF18)</h4>
-            <table>
-              <thead>
-                <tr>
-                  <th>Idioma</th>
-                  <th>Evento</th>
-                  <th>Asunto</th>
-                  <th>Mensaje</th>
-                </tr>
-              </thead>
-              <tbody>
-                {notificaciones.map((n) => (
-                  <tr key={n.id_notificacion}>
-                    <td><span className="badge badge-blue">{n.idioma}</span></td>
-                    <td>{n.evento}</td>
-                    <td><strong>{n.asunto}</strong></td>
-                    <td>{n.cuerpo}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <OperationalTable
+            titulo={t.notificacionesTitulo}
+            columnas={[
+              { key: 'idioma', titulo: 'Idioma', render: (n) => <StatusBadge estado="APROBADO" texto={n.idioma} /> },
+              { key: 'evento', titulo: 'Hito', mono: true },
+              { key: 'asunto', titulo: 'Asunto', render: (n) => <strong>{n.asunto}</strong> },
+              { key: 'cuerpo', titulo: 'Mensaje Localizado' }
+            ]}
+            datos={notificaciones}
+          />
         )}
 
+        {/* MODAL GUIADO DE DEVOLUCIÓN POR PRODUCTO DEFECTUOSO (DESIGN.md §3.D / RN19) */}
         {devolucionModal && (
           <div className="modal-backdrop">
             <div className="modal-box">
-              <h3 style={{ marginTop: 0 }}>Solicitar Devolución Postventa — Pedido #{devolucionModal.id_pedido}</h3>
-              <p style={{ fontSize: '0.83rem', color: '#475569' }}>
-                RN19: Los reclamos por <code>PRODUCTO_DEFECTUOSO</code> exigen adjuntar referencia de evidencia para inspección de calidad y aislamiento de stock.
-              </p>
-              <form onSubmit={enviarSolicitudDevolucion} style={{ display: 'grid', gap: '0.7rem' }}>
+              <h3 className="section-subtitle">{t.modalDevolucionTitulo} — Pedido #{devolucionModal.id_pedido}</h3>
+              <div className="alert alert-err" style={{ fontSize: '12px' }}>
+                <span>{t.modalDevolucionAviso}</span>
+              </div>
+              <form onSubmit={enviarSolicitudDevolucion} style={{ display: 'grid', gap: '12px' }}>
                 <div>
-                  <label>Causal tipificada (RF19)</label>
+                  <label>{t.itemAfectadoLabel}</label>
                   <select
-                    value={formDev.causalDevolucion}
-                    onChange={(e) => setFormDev({ ...formDev, causalDevolucion: e.target.value })}
+                    value={formDev.idProductoAfectado}
+                    onChange={(e) => setFormDev({ ...formDev, idProductoAfectado: Number(e.target.value) })}
                   >
-                    <option value="PRODUCTO_DEFECTUOSO">PRODUCTO_DEFECTUOSO</option>
-                    <option value="DANO_TRANSPORTE">DANO_TRANSPORTE</option>
-                    <option value="ERROR_ENVIO">ERROR_ENVIO</option>
+                    {devolucionModal.detalles?.map((d: any) => (
+                      <option key={d.id_producto} value={d.id_producto}>
+                        {d.nombre_producto} (SKU: {d.codigo} — Cant: {d.cantidad})
+                      </option>
+                    ))}
                   </select>
                 </div>
-                <div>
-                  <label>Unidades afectadas</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={formDev.unidadesDefectuosas}
-                    onChange={(e) => setFormDev({ ...formDev, unidadesDefectuosas: Number(e.target.value) })}
-                  />
+                <div className="form-grid">
+                  <div>
+                    <label>{t.causalLabel}</label>
+                    <select
+                      value={formDev.causalDevolucion}
+                      onChange={(e) => setFormDev({ ...formDev, causalDevolucion: e.target.value })}
+                    >
+                      <option value="PRODUCTO_DEFECTUOSO">PRODUCTO_DEFECTUOSO</option>
+                      <option value="DANO_TRANSPORTE">DANO_TRANSPORTE</option>
+                      <option value="ERROR_ENVIO">ERROR_ENVIO</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>{t.unidadesLabel}</label>
+                    <input
+                      type="number"
+                      min={1}
+                      className="mono"
+                      value={formDev.unidadesDefectuosas}
+                      onChange={(e) => setFormDev({ ...formDev, unidadesDefectuosas: Number(e.target.value) })}
+                    />
+                  </div>
                 </div>
                 <div>
-                  <label>Evidencia fotográfica / informe técnico (deje vacío para probar bloqueo RN19)</label>
+                  <label>{t.evidenciaLabel}</label>
                   <input
+                    className="mono"
                     value={formDev.evidenciaRef}
                     placeholder="Ej. EVID-FOTO-DEFECTO-01.jpg"
                     onChange={(e) => setFormDev({ ...formDev, evidenciaRef: e.target.value })}
                   />
                 </div>
                 <div>
-                  <label>Descripción detallada del defecto</label>
+                  <label>{t.motivoLabel}</label>
                   <textarea
                     rows={3}
                     required
                     value={formDev.motivo}
-                    placeholder="Describa el daño o defecto comprobable..."
+                    placeholder="Describa el defecto físico comprobable (mín. 5 caracteres)..."
                     onChange={(e) => setFormDev({ ...formDev, motivo: e.target.value })}
                   />
                 </div>
-                <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-                  <button type="button" className="btn btn-outline" onClick={() => setDevolucionModal(null)}>Cancelar</button>
-                  <button type="submit" className="btn btn-amber">Enviar Solicitud a Inspección</button>
+                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                  <button type="button" className="btn btn-outline" onClick={() => setDevolucionModal(null)}>
+                    {t.cancelar}
+                  </button>
+                  <button type="submit" className="btn btn-amber" disabled={!reclamoListoParaEnviar}>
+                    {t.enviarReclamo}
+                  </button>
                 </div>
               </form>
             </div>
@@ -455,275 +705,111 @@ export const TiendaPortal: React.FC<Props> = ({
   }
 
   const categoriasUnicas = ['TODAS', ...Array.from(new Set(productos.map((p) => p.categoria)))];
-  const subtotalLocal = carrito.reduce(
-    (acc, it) => acc + Number(it.producto.precioConvertido || 0) * it.cantidad,
-    0
-  );
 
   return (
-    <div className="split-layout">
-      {/* CATÁLOGO LOCALIZADO Y MULTIMONEDA */}
+    <div className="store-layout">
+      {/* CATÁLOGO LOCALIZADO Y MULTIMONEDA CON FILTROS (DESIGN.md §3.B) */}
       <div>
-        <div className="card">
-          <div className="form-grid" style={{ alignItems: 'end' }}>
+        <div className="card card-compact">
+          <div className="filter-toolbar">
             <div>
               <label>{t.buscarPlaceholder}</label>
-              <div style={{ display: 'flex', gap: '0.4rem' }}>
-                <input
-                  value={busqueda}
-                  placeholder={t.buscarPlaceholder}
-                  onChange={(e) => setBusqueda(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && cargarCatalogo()}
-                />
-                <button className="btn btn-primary" onClick={cargarCatalogo}>Buscar</button>
-              </div>
+              <input
+                value={busqueda}
+                placeholder={t.buscarPlaceholder}
+                onChange={(e) => setBusqueda(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && cargarCatalogo()}
+              />
             </div>
             <div>
-              <label>Categoría</label>
+              <label>{t.categoriaLabel}</label>
               <select value={categoria} onChange={(e) => setCategoria(e.target.value)}>
                 {categoriasUnicas.map((c) => (
                   <option key={c} value={c}>{c === 'TODAS' ? t.todasCategorias : c}</option>
                 ))}
               </select>
             </div>
+            <div>
+              <label>{t.precioMaxLabel} ({moneda})</label>
+              <input
+                type="number"
+                className="mono"
+                placeholder={t.sinLimite}
+                value={precioMax}
+                onChange={(e) => setPrecioMax(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && cargarCatalogo()}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button className="btn btn-primary" onClick={cargarCatalogo}>{t.buscarBtn}</button>
+              {(busqueda || categoria !== 'TODAS' || precioMax) && (
+                <button
+                  className="btn btn-outline"
+                  onClick={() => {
+                    setBusqueda('');
+                    setCategoria('TODAS');
+                    setPrecioMax('');
+                    setTimeout(cargarCatalogo, 0);
+                  }}
+                >
+                  {t.limpiarFiltros}
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
         <div className="grid-products">
           {productos.map((p) => (
-            <div className="product-card" key={p.id_producto}>
-              <img className="product-img" src={p.imagen_url} alt={p.nombre_localizado} />
-              <div className="product-body">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span className="badge badge-blue">{p.categoria}</span>
-                  <small style={{ color: '#64748b' }}>SKU: <code>{p.codigo}</code></small>
-                </div>
-                <strong style={{ fontSize: '1rem' }}>{p.nombre_localizado}</strong>
-                <p style={{ margin: 0, fontSize: '0.81rem', color: '#475569', flex: 1 }}>
-                  {p.descripcion_localizada}
-                </p>
-                <div style={{ fontSize: '0.75rem', color: '#64748b' }}>
-                  {t.codigoHs}: <b>{p.codigo_arancelario}</b> • {t.pesoDim}: {p.peso_kg} kg ({p.dimensiones} cm → Vol: {p.pesoVolumetricoKg} kg)
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.4rem' }}>
-                  <div>
-                    <div className="price-tag">
-                      {p.simboloMoneda} {Number(p.precioConvertido).toFixed(2)} <small style={{ fontSize: '0.72rem' }}>{p.moneda}</small>
-                    </div>
-                    <small style={{ color: '#059669', fontWeight: 600 }}>{t.stockDisponible}: {p.stock}</small>
-                  </div>
-                  <button className="btn btn-primary" onClick={() => agregarAlCarrito(p)}>
-                    + {t.agregarCarrito}
-                  </button>
-                </div>
-              </div>
-            </div>
+            <ProductCard
+              key={p.id_producto}
+              producto={p}
+              idioma={idioma}
+              onAgregar={agregarAlCarrito}
+            />
           ))}
         </div>
       </div>
 
-      {/* CARRITO Y FLUJO DE COMPRA INTERNACIONAL EN 4 PASOS (RNF12) */}
-      <div className="card" style={{ position: 'sticky', top: '1rem' }}>
-        <h3 style={{ marginTop: 0, marginBottom: '0.6rem' }}>{t.carritoTitulo}</h3>
-        <div className="steps-bar">
-          <div className={`step-pill ${pasoCheckout === 1 ? 'active' : ''}`}>{t.paso1}</div>
-          <div className={`step-pill ${pasoCheckout === 2 ? 'active' : ''}`}>{t.paso2}</div>
-          <div className={`step-pill ${pasoCheckout === 3 ? 'active' : ''}`}>{t.paso3}</div>
-          <div className={`step-pill ${pasoCheckout === 4 ? 'active' : ''}`}>{t.paso4}</div>
-        </div>
-
-        {carrito.length === 0 && !pedidoCreado ? (
-          <p style={{ color: '#64748b', fontSize: '0.88rem' }}>{t.carritoVacio}</p>
-        ) : (
-          <div>
-            {pasoCheckout === 1 && (
-              <div>
-                {carrito.map((it) => (
-                  <div
-                    key={it.producto.id_producto}
-                    style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.45rem 0', borderBottom: '1px solid #e2e8f0' }}
-                  >
-                    <div style={{ fontSize: '0.84rem' }}>
-                      <strong>{it.producto.nombre_localizado}</strong>
-                      <div style={{ color: '#64748b' }}>
-                        {it.producto.simboloMoneda} {Number(it.producto.precioConvertido).toFixed(2)} × {it.cantidad}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
-                      <button className="btn btn-outline" onClick={() => cambiarCantidad(it.producto.id_producto, -1)}>-</button>
-                      <strong>{it.cantidad}</strong>
-                      <button className="btn btn-outline" onClick={() => cambiarCantidad(it.producto.id_producto, 1)}>+</button>
-                    </div>
-                  </div>
-                ))}
-
-                <div style={{ marginTop: '0.75rem' }}>
-                  <label>Clasificación Tipo de Venta (RF08)</label>
-                  <select value={tipoVenta} onChange={(e) => setTipoVenta(e.target.value as any)}>
-                    <option value="MINORISTA">MINORISTA (Venta estándar)</option>
-                    <option value="MAYORISTA">MAYORISTA (Exportación corporativa)</option>
-                    <option value="PROMOCIONAL">PROMOCIONAL (Campaña global)</option>
-                  </select>
-                </div>
-
-                <div style={{ marginTop: '0.85rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <strong>{t.subtotal}: {subtotalLocal.toFixed(2)} {moneda}</strong>
-                  <button className="btn btn-primary" onClick={() => setPasoCheckout(2)}>
-                    Paso 2: Destino →
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {pasoCheckout === 2 && (
-              <div style={{ display: 'grid', gap: '0.7rem' }}>
-                {token && usuario?.tipoCuenta === 'CLIENTE' ? (
-                  <div>
-                    <label>Dirección Internacional Registrada (RN06)</label>
-                    <select
-                      value={idDireccionSel || ''}
-                      onChange={(e) => {
-                        const id = Number(e.target.value);
-                        setIdDireccionSel(id);
-                        const found = direcciones.find((d) => d.id_direccion === id);
-                        if (found) setPaisCotizacion(found.pais);
-                      }}
-                    >
-                      {direcciones.map((d) => (
-                        <option key={d.id_direccion} value={d.id_direccion}>
-                          [{d.pais}] {d.ciudad} — {d.linea_direccion} (CP {d.codigo_postal})
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="btn btn-outline"
-                      style={{ marginTop: '0.45rem', width: '100%' }}
-                      onClick={() => setMostrarFormDir(!mostrarFormDir)}
-                    >
-                      + Registrar otra dirección postal
-                    </button>
-                  </div>
-                ) : (
-                  <div>
-                    <label>País de Destino para Cotización Previa (incluye prueba bloqueo RN12)</label>
-                    <select value={paisCotizacion} onChange={(e) => setPaisCotizacion(e.target.value)}>
-                      {parametros?.paises?.map((p: any) => (
-                        <option key={p.codigo_pais} value={p.codigo_pais}>
-                          {p.nombre} ({p.codigo_pais}) {!p.habilitado ? '— [NO HABILITADO RN12]' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                {mostrarFormDir && (
-                  <form onSubmit={guardarNuevaDireccion} style={{ background: '#f8fafc', padding: '0.65rem', borderRadius: '0.5rem', display: 'grid', gap: '0.45rem' }}>
-                    <select value={nuevaDir.pais} onChange={(e) => setNuevaDir({ ...nuevaDir, pais: e.target.value })}>
-                      {parametros?.paises?.map((p: any) => (
-                        <option key={p.codigo_pais} value={p.codigo_pais}>{p.nombre} ({p.codigo_pais})</option>
-                      ))}
-                    </select>
-                    <input placeholder="Ciudad" required value={nuevaDir.ciudad} onChange={(e) => setNuevaDir({ ...nuevaDir, ciudad: e.target.value })} />
-                    <input placeholder="Línea de dirección" required value={nuevaDir.lineaDireccion} onChange={(e) => setNuevaDir({ ...nuevaDir, lineaDireccion: e.target.value })} />
-                    <input placeholder="Código Postal (ej. 01000-000 BR, 33131 US)" required value={nuevaDir.codigoPostal} onChange={(e) => setNuevaDir({ ...nuevaDir, codigoPostal: e.target.value })} />
-                    <button type="submit" className="btn btn-emerald">Guardar Dirección</button>
-                  </form>
-                )}
-
-                <div>
-                  <label>Operador Logístico Internacional (RF10)</label>
-                  <select value={operadorSel} onChange={(e) => setOperadorSel(e.target.value)}>
-                    {parametros?.operadores?.map((op: any) => (
-                      <option key={op.codigo} value={op.codigo}>
-                        {op.nombre} ({op.dias_transito_estimados} días est.)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <button className="btn btn-outline" onClick={() => setPasoCheckout(1)}>← Volver</button>
-                  <button className="btn btn-primary" onClick={cotizarPaso3}>Calcular Aduana y Flete →</button>
-                </div>
-              </div>
-            )}
-
-            {pasoCheckout === 3 && cotizacion && (
-              <div style={{ fontSize: '0.85rem', display: 'grid', gap: '0.45rem' }}>
-                <div style={{ background: '#f8fafc', padding: '0.65rem', borderRadius: '0.5rem' }}>
-                  <div><strong>Destino:</strong> {cotizacion.nombrePais} ({cotizacion.paisDestino})</div>
-                  <div><strong>Peso Físico:</strong> {cotizacion.pesoFisicoTotalKg} kg | <strong>Volumétrico:</strong> {cotizacion.pesoVolumetricoTotalKg} kg</div>
-                  <div><strong>Peso Tasable Aplicado:</strong> <span className="badge badge-blue">{cotizacion.pesoTasableKg} kg</span></div>
-                  <div><strong>Operador:</strong> {cotizacion.operadorCotizado} ({cotizacion.diasTransitoEstimados} días)</div>
-                  <div><strong>Tasa congelada (RN02):</strong> 1 USD = {cotizacion.tasaCongelada} {cotizacion.moneda}</div>
-                </div>
-
-                <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '0.45rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>{t.subtotal}:</span> <strong>{cotizacion.subtotal} {cotizacion.moneda}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>IVA destino + Aranceles HS:</span> <strong>{cotizacion.impuestos} {cotizacion.moneda}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <span>{t.envio}:</span> <strong>{cotizacion.costoEnvio} {cotizacion.moneda}</strong>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1.08rem', color: '#1d4ed8', marginTop: '0.35rem' }}>
-                    <strong>{t.totalCongelado}:</strong>
-                    <strong>{cotizacion.total} {cotizacion.moneda}</strong>
-                  </div>
-                  <div style={{ textAlign: 'right', fontSize: '0.76rem', color: '#64748b' }}>
-                    Equivalente moneda base empresa: ${cotizacion.equivalenteUsd} USD
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.5rem' }}>
-                  <button className="btn btn-outline" onClick={() => setPasoCheckout(2)}>← Destino</button>
-                  <button className="btn btn-emerald" onClick={confirmarPedidoPaso3}>
-                    {t.confirmarPedido}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {pasoCheckout === 4 && pedidoCreado && (
-              <div style={{ display: 'grid', gap: '0.65rem', fontSize: '0.85rem' }}>
-                <div className="alert alert-ok" style={{ margin: 0 }}>
-                  <span>Pedido <b>#{pedidoCreado.idPedido}</b> registrado en estado <code>CREADO</code>. Importe congelado: <b>{pedidoCreado.desglose.total} {pedidoCreado.desglose.moneda}</b>.</span>
-                </div>
-
-                <div>
-                  <label>Medio de Pago Internacional (CU05)</label>
-                  <select value={medioPago} onChange={(e) => setMedioPago(e.target.value as any)}>
-                    <option value="TARJETA">TARJETA INTERNACIONAL (Tokenizada PCI-DSS)</option>
-                    <option value="TRANSFERENCIA">TRANSFERENCIA SWIFT / ACH</option>
-                    <option value="BILLETERA_DIGITAL">BILLETERA DIGITAL / PIX / PAYPAL</option>
-                  </select>
-                </div>
-
-                <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', padding: '0.6rem', borderRadius: '0.45rem', fontSize: '0.78rem' }}>
-                  <strong>Seguridad PCI-DSS (RN11 / RNF03):</strong> Este formulario no captura ni almacena PAN ni CVV en la base de datos; emplea token de un solo uso ante la Pasarela Certificada.
-                </div>
-
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', color: '#0f172a' }}>
-                  <input
-                    type="checkbox"
-                    style={{ width: 'auto' }}
-                    checked={simularRechazo}
-                    onChange={(e) => setSimularRechazo(e.target.checked)}
-                  />
-                  Simular rechazo de pasarela (Excepción CU05 4a: mantiene pedido en CREADO)
-                </label>
-
-                <button className="btn btn-primary" onClick={ejecutarPagoPaso4}>
-                  {t.pagarAhora} ({pedidoCreado.desglose.total} {pedidoCreado.desglose.moneda})
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
+      {/* STEPPER DE CHECKOUT EN 4 PASOS CON DESGLOSE FISCAL STICKY (DESIGN.md §3.C) */}
+      <CheckoutStepper
+        idioma={idioma}
+        moneda={moneda}
+        carrito={carrito}
+        paso={pasoCheckout}
+        setPaso={setPasoCheckout}
+        tipoVenta={tipoVenta}
+        setTipoVenta={setTipoVenta}
+        onCambiarCantidad={cambiarCantidad}
+        autenticadoComoCliente={Boolean(token && usuario?.tipoCuenta === 'CLIENTE')}
+        direcciones={direcciones}
+        idDireccionSel={idDireccionSel}
+        setIdDireccionSel={setIdDireccionSel}
+        paisCotizacion={paisCotizacion}
+        setPaisCotizacion={setPaisCotizacion}
+        operadorSel={operadorSel}
+        setOperadorSel={setOperadorSel}
+        parametros={parametros}
+        mostrarFormDir={mostrarFormDir}
+        setMostrarFormDir={setMostrarFormDir}
+        nuevaDir={nuevaDir}
+        setNuevaDir={setNuevaDir}
+        onGuardarDireccion={guardarNuevaDireccion}
+        onCotizarPaso3={cotizarPaso3}
+        cotizacion={cotizacion}
+        onConfirmarPedidoPaso3={confirmarPedidoPaso3}
+        pedidoCreado={pedidoCreado}
+        medioPago={medioPago}
+        setMedioPago={setMedioPago}
+        simularRechazo={simularRechazo}
+        setSimularRechazo={setSimularRechazo}
+        onEjecutarPagoPaso4={ejecutarPagoPaso4}
+        pagoConfirmado={pagoConfirmado}
+        onIrAMisPedidos={() => {
+          setPagoConfirmado(null);
+          onCambiarVista('MIS_PEDIDOS');
+        }}
+      />
     </div>
   );
 };

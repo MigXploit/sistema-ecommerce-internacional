@@ -1,5 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { apiFetch, UsuarioSesion } from './api';
+import { OperationalTable } from './components/OperationalTable';
+import { ImmutableTag, StatusBadge } from './components/StatusBadge';
+import {
+  modalBloqueoSeguridadInmutabilidad,
+  modalConfirmarEstadoUsuarioRn18,
+  modalErrorValidacionOAduana,
+  toastExito
+} from './utils/alerts';
 
 interface Props {
   token: string;
@@ -18,8 +26,10 @@ const ROLES_RBAC = [
 ];
 
 export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) => {
+  const [seccion, setSeccion] = useState<'AUDITORIA' | 'DIRECTORIO' | 'ALTA_BCRYPT'>('AUDITORIA');
   const [cuentas, setCuentas] = useState<any[]>([]);
   const [bitacora, setBitacora] = useState<any[]>([]);
+  const [filtroEntidad, setFiltroEntidad] = useState('TODAS');
   const [nuevoUsr, setNuevoUsr] = useState({
     nombreCompleto: '',
     login: '',
@@ -31,7 +41,7 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
     try {
       const [u, a] = await Promise.all([
         apiFetch<any[]>('/api/seguridad/usuarios', {}, token),
-        apiFetch<any[]>('/api/seguridad/auditoria?limite=60', {}, token)
+        apiFetch<any[]>('/api/seguridad/auditoria?limite=80', {}, token)
       ]);
       setCuentas(u);
       setBitacora(a);
@@ -51,172 +61,288 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
         method: 'POST',
         body: JSON.stringify(nuevoUsr)
       }, token);
-      notificar('ok', resp.mensaje);
+      toastExito(resp.mensaje, `@${nuevoUsr.login} [${nuevoUsr.rol}]`);
       setNuevoUsr({ nombreCompleto: '', login: '', clave: '', rol: 'LOGISTICA' });
       cargarSeguridad();
+      setSeccion('DIRECTORIO');
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalErrorValidacionOAduana({
+        titulo: 'Conflicto en Registro de Cuenta (CU14 2a)',
+        mensaje: err.message,
+        codigoRef: nuevoUsr.login
+      });
     }
   };
 
-  const cambiarEstado = async (id: number, activo: boolean) => {
+  const cambiarEstado = async (u: any, activar: boolean) => {
+    // Modal de confirmación explícita de desactivación lógica RN18
+    const ok = await modalConfirmarEstadoUsuarioRn18({
+      login: u.login,
+      nombre: u.nombre_completo,
+      activar
+    });
+    if (!ok) return;
+
     try {
-      const resp = await apiFetch(`/api/seguridad/usuarios/${id}`, {
+      const resp = await apiFetch(`/api/seguridad/usuarios/${u.id_usuario}`, {
         method: 'PATCH',
-        body: JSON.stringify({ activo, desbloquear: true })
+        body: JSON.stringify({ activo: activar, desbloquear: true })
       }, token);
-      notificar('ok', resp.mensaje);
+      toastExito(resp.mensaje, `@${u.login} → ${activar ? 'ACTIVO' : 'DESACTIVADO (RN18)'}`);
       cargarSeguridad();
     } catch (err: any) {
       notificar('err', err.message);
     }
   };
 
-  const probarBorradoFisicoRn18 = async (id: number) => {
+  const simularIntentoBorradoUsuarioRn18 = async () => {
+    const idTarget = cuentas[cuentas.length - 1]?.id_usuario || 1;
     try {
-      await apiFetch(`/api/seguridad/usuarios/${id}`, { method: 'DELETE' }, token);
+      await apiFetch(`/api/seguridad/usuarios/${idTarget}`, { method: 'DELETE' }, token);
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalBloqueoSeguridadInmutabilidad({
+        regla: 'RN18 • PROHIBICIÓN DE BORRADO FÍSICO',
+        titulo: 'Eliminación Física de Usuario Bloqueada',
+        mensaje: err.message
+      });
       cargarSeguridad();
     }
   };
 
-  const probarInmutabilidadAuditoria = async (idAuditoria: number) => {
+  const simularIntentoAlteracionAuditoriaRn17 = async () => {
+    const idTarget = bitacora[0]?.id_auditoria || 1;
     try {
-      await apiFetch(`/api/seguridad/auditoria/${idAuditoria}`, { method: 'DELETE' }, token);
+      await apiFetch(`/api/seguridad/auditoria/${idTarget}`, { method: 'DELETE' }, token);
     } catch (err: any) {
-      notificar('err', err.message);
+      await modalBloqueoSeguridadInmutabilidad({
+        regla: 'RN17 / RNF08 • AUDITORÍA INMUTABLE',
+        titulo: 'Intento de Borrado sobre AUDITORIA Bloqueado',
+        mensaje: err.message
+      });
       cargarSeguridad();
     }
   };
+
+  const entidadesUnicas = ['TODAS', ...Array.from(new Set(bitacora.map((b) => b.entidad)))];
+  const bitacoraFiltrada = bitacora.filter(
+    (b) => filtroEntidad === 'TODAS' || b.entidad === filtroEntidad
+  );
 
   return (
     <div>
-      <div className="card card-security">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+      {/* Encabezado Pizarra Oscuro #0F172A con Acento Ámbar #D97706 (DESIGN.md §2) */}
+      <div className="card-security-banner">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           <div>
-            <h3 style={{ margin: 0 }}>Subsistema Autónomo de Seguridad, RBAC, Hasheo Bcrypt y Auditoría Inmutable (CU14)</h3>
-            <small style={{ color: '#92400e', fontWeight: 600 }}>
-              Desacoplado de la Administración del Sistema (RN20) • Oficial en sesión: {usuario.nombre} • Firma JWT RS256 • Bcrypt Cost Factor 12
-            </small>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontSize: '20px' }}>🛡️</span>
+              <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800 }}>
+                Consola Autónoma del Oficial de Seguridad (CU14 / RN20)
+              </h2>
+            </div>
+            <div className="mono" style={{ fontSize: '12px', color: '#FBBF24', marginTop: '4px' }}>
+              Subsistema Independiente de la Administración Operativa • Hasheo bcrypt (Factor Costo 12 + Salt Único) • Firma JWT RS256 • Auditoría Inmutable
+            </div>
           </div>
-          <button className="btn btn-outline" onClick={cargarSeguridad}>Actualizar Bitácora</button>
+          <button className="btn btn-sm btn-amber" onClick={cargarSeguridad}>
+            ↻ Refrescar Bitácora
+          </button>
         </div>
       </div>
 
-      <div className="card">
-        <h4 style={{ marginTop: 0 }}>Alta de Cuenta Interna con Hasheo Criptográfico Irreversible Bcrypt Costo 12 (RF21)</h4>
-        <form onSubmit={crearUsuario} className="form-grid" style={{ alignItems: 'end' }}>
-          <div>
-            <label>Nombre Completo</label>
-            <input required value={nuevoUsr.nombreCompleto} onChange={(e) => setNuevoUsr({ ...nuevoUsr, nombreCompleto: e.target.value })} placeholder="Ej. Camila Torrez" />
+      <div className="admin-shell">
+        {/* Barra lateral izquierda fija en tema Pizarra Oscuro (colapsa en < 768px - RNF13) */}
+        <aside className="admin-sidebar security-sidebar">
+          <div className="sidebar-role-badge">
+            <div style={{ fontSize: '11px', color: '#FBBF24', fontWeight: 700, textTransform: 'uppercase' }}>
+              Rol de Seguridad Autónoma
+            </div>
+            <div style={{ marginTop: '6px' }}>
+              <StatusBadge estado="PENDIENTE" texto={usuario.rol} />
+            </div>
+            <div style={{ fontSize: '13px', marginTop: '6px', fontWeight: 600 }}>{usuario.nombre}</div>
+            <div className="mono" style={{ fontSize: '11px', color: '#94A3B8' }}>@{usuario.identificador}</div>
           </div>
-          <div>
-            <label>Login Único</label>
-            <input required value={nuevoUsr.login} onChange={(e) => setNuevoUsr({ ...nuevoUsr, login: e.target.value })} placeholder="Ej. camila.logistica" />
-          </div>
-          <div>
-            <label>Contraseña (se persistirá como $2a$12$...)</label>
-            <input type="password" required minLength={6} value={nuevoUsr.clave} onChange={(e) => setNuevoUsr({ ...nuevoUsr, clave: e.target.value })} placeholder="Mínimo 6 caracteres" />
-          </div>
-          <div>
-            <label>Rol RBAC (Mínimo Privilegio)</label>
-            <select value={nuevoUsr.rol} onChange={(e) => setNuevoUsr({ ...nuevoUsr, rol: e.target.value })}>
-              {ROLES_RBAC.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </div>
-          <div>
-            <button type="submit" className="btn btn-amber" style={{ width: '100%' }}>Crear Usuario con Salt + Bcrypt</button>
-          </div>
-        </form>
-      </div>
 
-      <div className="card">
-        <h4 style={{ marginTop: 0 }}>Directorio de Usuarios Internos y Estado de Credenciales (Tabla USUARIO)</h4>
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Funcionario / Login</th>
-              <th>Rol RBAC</th>
-              <th>Prefijo Hash Bcrypt (Salt Único)</th>
-              <th>Intentos</th>
-              <th>Estado</th>
-              <th>Controles de Seguridad</th>
-            </tr>
-          </thead>
-          <tbody>
-            {cuentas.map((u) => (
-              <tr key={u.id_usuario}>
-                <td>#{u.id_usuario}</td>
-                <td><strong>{u.nombre_completo}</strong><br /><code>{u.login}</code></td>
-                <td><span className="badge badge-blue">{u.rol}</span></td>
-                <td><code style={{ fontSize: '0.75rem' }}>{u.resumen_hash_bcrypt}</code></td>
-                <td>{u.intentos_fallidos} / 5</td>
-                <td>
-                  {u.activo
-                    ? <span className="badge badge-green">ACTIVO</span>
-                    : <span className="badge badge-red">DESACTIVADO (RN18)</span>}
-                </td>
-                <td style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => cambiarEstado(u.id_usuario, !u.activo)}
-                  >
-                    {u.activo ? 'Desactivar (RN18)' : 'Reactivar / Desbloquear'}
-                  </button>
-                  <button
-                    className="btn btn-danger"
-                    onClick={() => probarBorradoFisicoRn18(u.id_usuario)}
-                  >
-                    Probar Borrado Físico
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          <button
+            className={`sidebar-nav-btn ${seccion === 'AUDITORIA' ? 'active' : ''}`}
+            onClick={() => setSeccion('AUDITORIA')}
+          >
+            <span>📜 Auditoría Inmutable</span>
+            <span>›</span>
+          </button>
+          <button
+            className={`sidebar-nav-btn ${seccion === 'DIRECTORIO' ? 'active' : ''}`}
+            onClick={() => setSeccion('DIRECTORIO')}
+          >
+            <span>👥 Directorio RBAC y Hashes</span>
+            <span>›</span>
+          </button>
+          <button
+            className={`sidebar-nav-btn ${seccion === 'ALTA_BCRYPT' ? 'active' : ''}`}
+            onClick={() => setSeccion('ALTA_BCRYPT')}
+          >
+            <span>🔐 Alta Cuenta Bcrypt-12</span>
+            <span>›</span>
+          </button>
+        </aside>
 
-      <div className="card">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
-          <h4 style={{ margin: 0 }}>Bitácora de Auditoría Inmutable (Tabla AUDITORIA — RF23 / RNF08 / RN17)</h4>
-          {bitacora.length > 0 && (
-            <button className="btn btn-danger" onClick={() => probarInmutabilidadAuditoria(bitacora[0].id_auditoria)}>
-              Verificar Bloqueo DELETE sobre AUDITORIA #{bitacora[0].id_auditoria}
-            </button>
+        <div>
+          {/* 1. BITÁCORA DE AUDITORÍA INMUTABLE (Sin botones de borrado en filas + prueba discreta en cabecera) */}
+          {seccion === 'AUDITORIA' && (
+            <OperationalTable
+              titulo="Bitácora de Auditoría Inmutable (Tabla AUDITORIA — RF23 / RNF08 / RN17)"
+              subtitulo="Registros protegidos a nivel de aplicación y mediante trigger de base de datos PostgreSQL contra UPDATE o DELETE."
+              accionesCabecera={
+                <button className="btn btn-audit-probe" onClick={simularIntentoAlteracionAuditoriaRn17}>
+                  🧪 Simular intento de alteración (Prueba de auditoría RN17)
+                </button>
+              }
+              filtrosSlot={
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <label style={{ margin: 0 }}>Filtrar por Entidad:</label>
+                  <select
+                    style={{ width: 'auto' }}
+                    value={filtroEntidad}
+                    onChange={(e) => setFiltroEntidad(e.target.value)}
+                  >
+                    {entidadesUnicas.map((ent) => (
+                      <option key={ent} value={ent}>{ent}</option>
+                    ))}
+                  </select>
+                </div>
+              }
+              columnas={[
+                { key: 'id_auditoria', titulo: 'ID', mono: true, render: (a) => `#${a.id_auditoria}` },
+                {
+                  key: 'fecha_hora',
+                  titulo: 'Fecha / Hora Exacta',
+                  mono: true,
+                  render: (a) => String(a.fecha_hora).replace('T', ' ').substring(0, 19)
+                },
+                { key: 'actor', titulo: 'Actor', mono: true },
+                { key: 'operacion', titulo: 'Operación Crítica', render: (a) => <strong>{a.operacion}</strong> },
+                {
+                  key: 'entidad',
+                  titulo: 'Entidad',
+                  mono: true,
+                  render: (a) => `${a.entidad}${a.id_entidad ? ` #${a.id_entidad}` : ''}`
+                },
+                { key: 'resultado', titulo: 'Resultado', render: (a) => <StatusBadge estado={a.resultado} /> },
+                { key: 'detalle', titulo: 'Detalle Trazable' },
+                { key: 'inmutable', titulo: 'Integridad (RNF08)', render: () => <ImmutableTag /> }
+              ]}
+              datos={bitacoraFiltrada}
+              filasPorPagina={10}
+            />
+          )}
+
+          {/* 2. DIRECTORIO DE USUARIOS RBAC Y HASHES BCRYPT */}
+          {seccion === 'DIRECTORIO' && (
+            <OperationalTable
+              titulo="Directorio de Usuarios Internos, Roles RBAC y Hashes Bcrypt (Tabla USUARIO — RF21 / RN18)"
+              subtitulo="RN18: Las cuentas con historial no admiten borrado físico; únicamente desactivación lógica preservando su trazabilidad."
+              accionesCabecera={
+                <button className="btn btn-audit-probe" onClick={simularIntentoBorradoUsuarioRn18}>
+                  🧪 Simular intento de alteración / borrado físico (Prueba RN18)
+                </button>
+              }
+              columnas={[
+                { key: 'id_usuario', titulo: 'ID', mono: true, render: (u) => `#${u.id_usuario}` },
+                {
+                  key: 'nombre_completo',
+                  titulo: 'Funcionario / Login',
+                  render: (u) => (
+                    <div>
+                      <strong>{u.nombre_completo}</strong>
+                      <div className="mono" style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>@{u.login}</div>
+                    </div>
+                  )
+                },
+                { key: 'rol', titulo: 'Rol RBAC', render: (u) => <StatusBadge estado={u.rol === 'OFICIAL_SEGURIDAD' ? 'PENDIENTE' : 'APROBADO'} texto={u.rol} /> },
+                { key: 'resumen_hash_bcrypt', titulo: 'Prefijo Hash Bcrypt (Costo 12)', mono: true },
+                { key: 'intentos_fallidos', titulo: 'Intentos (Máx 5)', mono: true, render: (u) => `${u.intentos_fallidos} / 5` },
+                {
+                  key: 'activo',
+                  titulo: 'Estado Cuenta',
+                  render: (u) => (
+                    <StatusBadge
+                      estado={u.activo ? 'ACTIVO' : 'DESACTIVADO'}
+                      texto={u.activo ? 'ACTIVO' : 'DESACTIVADO (RN18)'}
+                    />
+                  )
+                },
+                {
+                  key: 'control',
+                  titulo: 'Control de Acceso (RN18)',
+                  render: (u) => (
+                    <button
+                      className={`btn btn-sm ${u.activo ? 'btn-outline' : 'btn-accent'}`}
+                      onClick={() => cambiarEstado(u, !u.activo)}
+                    >
+                      {u.activo ? 'Desactivar Cuenta (RN18)' : 'Reactivar / Desbloquear'}
+                    </button>
+                  )
+                }
+              ]}
+              datos={cuentas}
+            />
+          )}
+
+          {/* 3. ALTA DE CUENTA CON HASHEO BCRYPT COSTO 12 */}
+          {seccion === 'ALTA_BCRYPT' && (
+            <div className="card">
+              <h3 className="section-subtitle">Alta de Cuenta Interna con Hasheo Criptográfico Irreversible Bcrypt Costo 12 (RF21)</h3>
+              <form onSubmit={crearUsuario} style={{ display: 'grid', gap: '16px' }}>
+                <div className="form-grid">
+                  <div>
+                    <label>Nombre Completo del Funcionario</label>
+                    <input
+                      required
+                      value={nuevoUsr.nombreCompleto}
+                      onChange={(e) => setNuevoUsr({ ...nuevoUsr, nombreCompleto: e.target.value })}
+                      placeholder="Ej. Camila Torrez"
+                    />
+                  </div>
+                  <div>
+                    <label>Login Único</label>
+                    <input
+                      required
+                      className="mono"
+                      value={nuevoUsr.login}
+                      onChange={(e) => setNuevoUsr({ ...nuevoUsr, login: e.target.value })}
+                      placeholder="Ej. camila.logistica"
+                    />
+                  </div>
+                  <div>
+                    <label>Contraseña (se hashea con salt aleatorio $2a$12$...)</label>
+                    <input
+                      type="password"
+                      required
+                      minLength={6}
+                      value={nuevoUsr.clave}
+                      onChange={(e) => setNuevoUsr({ ...nuevoUsr, clave: e.target.value })}
+                      placeholder="Mínimo 6 caracteres"
+                    />
+                  </div>
+                  <div>
+                    <label>Rol RBAC (Principio de Mínimo Privilegio)</label>
+                    <select value={nuevoUsr.rol} onChange={(e) => setNuevoUsr({ ...nuevoUsr, rol: e.target.value })}>
+                      {ROLES_RBAC.map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <button type="submit" className="btn btn-amber">
+                    🔐 Generar Hash Bcrypt (Costo 12) y Registrar Usuario
+                  </button>
+                </div>
+              </form>
+            </div>
           )}
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Fecha / Hora</th>
-              <th>Actor</th>
-              <th>Operación</th>
-              <th>Entidad</th>
-              <th>Resultado</th>
-              <th>Detalle Trazable</th>
-            </tr>
-          </thead>
-          <tbody>
-            {bitacora.map((a) => (
-              <tr key={a.id_auditoria}>
-                <td>#{a.id_auditoria}</td>
-                <td><small>{String(a.fecha_hora).replace('T', ' ').substring(0, 19)}</small></td>
-                <td><code>{a.actor}</code></td>
-                <td><strong>{a.operacion}</strong></td>
-                <td>{a.entidad} {a.id_entidad ? `#${a.id_entidad}` : ''}</td>
-                <td>
-                  <span className={`badge ${String(a.resultado).includes('BLOQUEADO') || String(a.resultado).includes('RECHAZADO') ? 'badge-red' : 'badge-green'}`}>
-                    {a.resultado}
-                  </span>
-                </td>
-                <td><small>{a.detalle}</small></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
     </div>
   );

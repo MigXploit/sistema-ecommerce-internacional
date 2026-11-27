@@ -8,12 +8,17 @@ const rootDir = path.resolve(scriptsDir, '..');
 const backendDir = path.join(rootDir, 'backend');
 const frontendDir = path.join(rootDir, 'frontend');
 const jarPath = path.join(backendDir, 'target', 'ecommerce-internacional.jar');
-const modo = process.argv[2] || 'demo'; // 'demo' o 'postgres'
+const modo = (process.argv[2] || 'demo').toLowerCase(); // 'demo' (autónomo H2-PostgreSQL) o 'postgres' (PostgreSQL 18)
 const isWin = process.platform === 'win32';
 const npmCmd = isWin ? 'npm.cmd' : 'npm';
 
+console.log('============================================================================');
+console.log(' SISTEMA DE COMERCIO ELECTRÓNICO INTERNACIONAL (INF-241 - GRUPO 12)');
+console.log(` Modo de Base de Datos: ${modo === 'postgres' ? 'PostgreSQL 18 (db_ecommerce_internacional)' : 'Prototipo Autónomo en Memoria (14 Tablas 3FN + Semilla D13)'}`);
+console.log('============================================================================');
+
 if (!fs.existsSync(jarPath)) {
-  console.log('==> Compilando backend Spring Boot por primera vez...');
+  console.log('==> Empaquetando backend Spring Boot (ecommerce-internacional.jar)...');
   const mvnw = path.join(backendDir, isWin ? 'mvnw.cmd' : 'mvnw');
   const cmd = fs.existsSync(mvnw) ? mvnw : 'mvn';
   const res = spawnSync(cmd, ['-DskipTests', 'package'], {
@@ -43,7 +48,7 @@ if (modo === 'demo') {
   backendArgs.push('--spring.profiles.active=demo');
 }
 
-console.log(`==> Iniciando Backend Spring Boot (modo: ${modo}) en http://localhost:8080 ...`);
+console.log('==> Iniciando Backend Spring Boot en http://localhost:8080 ...');
 const backend = spawn('java', backendArgs, {
   cwd: backendDir,
   stdio: 'inherit',
@@ -57,11 +62,19 @@ const frontend = spawn(npmCmd, ['run', 'dev'], {
   shell: isWin
 });
 
+let cerrando = false;
 const finalizar = () => {
-  backend.kill();
-  frontend.kill();
+  if (cerrando) return;
+  cerrando = true;
+  try { backend.kill(); } catch {}
+  try { frontend.kill(); } catch {}
   process.exit(0);
 };
 
 process.on('SIGINT', finalizar);
 process.on('SIGTERM', finalizar);
+backend.on('exit', (code) => {
+  if (!cerrando && code !== 0) {
+    console.error(`[!] El backend terminó con código ${code}. Verifique si el puerto 8080 ya está en uso.`);
+  }
+});
