@@ -210,14 +210,30 @@ class PrototipoAceptacionTest {
 
     @Test
     void seguimientoLogisticoPublicoYEndpointsCompletosAl100() throws Exception {
-        // 1. Seguimiento logístico público por número de guía (CU08 / RF15)
+        // 1. Seguimiento logístico autenticado y aislamiento por titular / rol (CU08 / RF15 / RNF02)
         mvc.perform(get("/api/envios/seguimiento/CG-2026-000731"))
+                .andExpect(status().isUnauthorized());
+
+        String tokenCarla = login("carla.santos@email.br", "Cliente2026!", "CLIENTE");
+        mvc.perform(get("/api/envios/seguimiento/CG-2026-000731")
+                        .header("Authorization", "Bearer " + tokenCarla))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.numero_guia").value("CG-2026-000731"))
                 .andExpect(jsonPath("$.eventos").isArray())
                 .andExpect(jsonPath("$.detalles").isArray());
 
-        mvc.perform(get("/api/envios/seguimiento/GUIA-INEXISTENTE-999"))
+        String tokenDiego = login("diego.rojas@comercio.bo", "Cliente2026!", "CLIENTE");
+        mvc.perform(get("/api/envios/seguimiento/CG-2026-000731")
+                        .header("Authorization", "Bearer " + tokenDiego))
+                .andExpect(status().isForbidden());
+
+        String tokenLog = login("logistica", "Logistica2026!", "INTERNO");
+        mvc.perform(get("/api/envios/seguimiento/CG-2026-000731")
+                        .header("Authorization", "Bearer " + tokenLog))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/envios/seguimiento/GUIA-INEXISTENTE-999")
+                        .header("Authorization", "Bearer " + tokenLog))
                 .andExpect(status().isNotFound());
 
         // 2. Filtro de rango de precio (precioMin y precioMax - RF04)
@@ -225,15 +241,21 @@ class PrototipoAceptacionTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$").isArray());
 
-        // 3. Perfil de cliente (RF05)
-        String tokenCliente = login("diego.rojas@comercio.bo", "Cliente2026!", "CLIENTE");
+        // 3. Perfil de cliente exclusivo de CLIENTE (RF05) y aislamiento de pedidos para otros roles
         mvc.perform(get("/api/clientes/perfil")
-                        .header("Authorization", "Bearer " + tokenCliente))
+                        .header("Authorization", "Bearer " + tokenDiego))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.pais").value("BO"));
 
-        // 4. Contingencia de tipo de cambio RN03 (simularFallaProveedor=true)
         String tokenCat = login("catalogo", "Catalogo2026!", "INTERNO");
+        mvc.perform(get("/api/pedidos")
+                        .header("Authorization", "Bearer " + tokenCat))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/clientes/mis-notificaciones")
+                        .header("Authorization", "Bearer " + tokenCat))
+                .andExpect(status().isForbidden());
+
+        // 4. Contingencia de tipo de cambio RN03 (simularFallaProveedor=true)
         mvc.perform(post("/api/catalogo/sincronizar-tasas?simularFallaProveedor=true")
                         .header("Authorization", "Bearer " + tokenCat))
                 .andExpect(status().isOk())
@@ -248,6 +270,10 @@ class PrototipoAceptacionTest {
 
         // 6. Parámetros operativos completos: aranceles HS, operadores e idiomas (CU13 / RNF09)
         String tokenAdmin = login("admin.parametros", "AdminParam2026!", "INTERNO");
+        mvc.perform(get("/api/envios/seguimiento/CG-2026-000731")
+                        .header("Authorization", "Bearer " + tokenAdmin))
+                .andExpect(status().isForbidden());
+
         mvc.perform(get("/api/parametros/aranceles")
                         .header("Authorization", "Bearer " + tokenAdmin))
                 .andExpect(status().isOk())
@@ -261,6 +287,18 @@ class PrototipoAceptacionTest {
                                 "codigoArancelario", "6201.99",
                                 "tasaArancel", 0.14,
                                 "restringido", false
+                        ))))
+                .andExpect(status().isOk());
+
+        mvc.perform(post("/api/parametros/operadores")
+                        .header("Authorization", "Bearer " + tokenAdmin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(Map.of(
+                                "codigoOperador", "FEDEX_INTL",
+                                "nombre", "FedEx International Priority",
+                                "tarifaBaseUsd", 28.00,
+                                "diasEstimados", 4,
+                                "activo", true
                         ))))
                 .andExpect(status().isOk());
     }

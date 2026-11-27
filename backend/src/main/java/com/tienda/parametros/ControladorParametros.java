@@ -83,7 +83,7 @@ public class ControladorParametros {
         """);
     }
 
-    public record GuardarArancelReq(String codigoPais, String codigoArancelario, BigDecimal tasaArancel, boolean restringido) {}
+    public record GuardarArancelReq(String codigoPais, String codigoArancelario, String descripcionPartida, BigDecimal tasaArancel, boolean restringido) {}
 
     @PostMapping("/api/parametros/aranceles")
     @Transactional
@@ -94,26 +94,29 @@ public class ControladorParametros {
         }
         String pais = req.codigoPais().trim().toUpperCase();
         String hs = req.codigoArancelario().trim();
+        String desc = (req.descripcionPartida() != null && !req.descripcionPartida().isBlank())
+                ? req.descripcionPartida().trim()
+                : "Partida arancelaria HS " + hs;
         Integer existe = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM param_arancel WHERE codigo_pais = ? AND codigo_arancelario = ?",
                 Integer.class, pais, hs);
         if (existe != null && existe > 0) {
             jdbc.update("""
-                UPDATE param_arancel SET tasa_arancel = ?, restringido = ?
+                UPDATE param_arancel SET descripcion_partida = ?, tasa_arancel = ?, restringido = ?
                 WHERE codigo_pais = ? AND codigo_arancelario = ?
-            """, req.tasaArancel(), req.restringido(), pais, hs);
+            """, desc, req.tasaArancel(), req.restringido(), pais, hs);
         } else {
             jdbc.update("""
-                INSERT INTO param_arancel (codigo_pais, codigo_arancelario, tasa_arancel, restringido)
-                VALUES (?, ?, ?, ?)
-            """, pais, hs, req.tasaArancel(), req.restringido());
+                INSERT INTO param_arancel (codigo_pais, codigo_arancelario, descripcion_partida, tasa_arancel, restringido)
+                VALUES (?, ?, ?, ?, ?)
+            """, pais, hs, desc, req.tasaArancel(), req.restringido());
         }
         auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "CONFIGURACION_ARANCEL_HS",
                 "PARAM_ARANCEL", null, "EXITOSO", "Arancel " + pais + "/" + hs + " tasa=" + req.tasaArancel() + " restringido=" + req.restringido());
         return ResponseEntity.ok(Map.of("mensaje", "Partida arancelaria HS " + hs + " para " + pais + " guardada y auditada."));
     }
 
-    public record GuardarOperadorReq(String codigoOperador, String nombre, BigDecimal tarifaBaseUsd, int diasEstimados, boolean activo) {}
+    public record GuardarOperadorReq(String codigoOperador, String nombre, BigDecimal tarifaBaseUsd, BigDecimal tarifaKgUsd, int diasEstimados, boolean activo) {}
 
     @PostMapping("/api/parametros/operadores")
     @Transactional
@@ -123,17 +126,21 @@ public class ControladorParametros {
             return ResponseEntity.badRequest().body(Map.of("mensaje", "La tarifa base y los días estimados deben ser mayores a cero."));
         }
         String cod = req.codigoOperador().trim().toUpperCase();
-        Integer existe = jdbc.queryForObject("SELECT COUNT(*) FROM param_operador_logistico WHERE codigo_operador = ?", Integer.class, cod);
+        BigDecimal tarifaKg = (req.tarifaKgUsd() != null && req.tarifaKgUsd().compareTo(BigDecimal.ZERO) > 0)
+                ? req.tarifaKgUsd()
+                : new BigDecimal("8.50");
+        String endpoint = "https://api." + cod.toLowerCase().replace("_", "-") + ".intl/v1/shipments";
+        Integer existe = jdbc.queryForObject("SELECT COUNT(*) FROM param_operador_logistico WHERE codigo = ?", Integer.class, cod);
         if (existe != null && existe > 0) {
             jdbc.update("""
-                UPDATE param_operador_logistico SET nombre = ?, tarifa_base_usd = ?, dias_estimados = ?, activo = ?
-                WHERE codigo_operador = ?
-            """, req.nombre().trim(), req.tarifaBaseUsd(), req.diasEstimados(), req.activo(), cod);
+                UPDATE param_operador_logistico SET nombre = ?, tarifa_base_usd = ?, tarifa_kg_usd = ?, dias_transito_estimados = ?, activo = ?
+                WHERE codigo = ?
+            """, req.nombre().trim(), req.tarifaBaseUsd(), tarifaKg, req.diasEstimados(), req.activo(), cod);
         } else {
             jdbc.update("""
-                INSERT INTO param_operador_logistico (codigo_operador, nombre, tarifa_base_usd, dias_estimados, activo)
-                VALUES (?, ?, ?, ?, ?)
-            """, cod, req.nombre().trim(), req.tarifaBaseUsd(), req.diasEstimados(), req.activo());
+                INSERT INTO param_operador_logistico (codigo, nombre, tarifa_base_usd, tarifa_kg_usd, dias_transito_estimados, endpoint_api, activo)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, cod, req.nombre().trim(), req.tarifaBaseUsd(), tarifaKg, req.diasEstimados(), endpoint, req.activo());
         }
         auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "CONFIGURACION_OPERADOR_LOGISTICO",
                 "PARAM_OPERADOR_LOGISTICO", null, "EXITOSO", "Operador " + cod + " tarifa=" + req.tarifaBaseUsd() + " USD");

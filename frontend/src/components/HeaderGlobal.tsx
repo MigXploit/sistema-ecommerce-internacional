@@ -58,6 +58,13 @@ export const HeaderGlobal: React.FC<HeaderGlobalProps> = ({
   onCerrarSesion
 }) => {
   const t = TEXTOS[idioma];
+  const esInterno = usuario?.tipoCuenta === 'INTERNO';
+  const puedeRastrear = !esInterno || usuario?.rol === 'LOGISTICA' || usuario?.rol === 'GESTOR_PEDIDOS';
+  const destinoLogo = esInterno
+    ? usuario?.rol === 'OFICIAL_SEGURIDAD'
+      ? 'SEGURIDAD'
+      : 'OPERATIVO'
+    : 'TIENDA';
 
   const tasaObj = parametros?.tasasCambio?.find((tc: any) => tc.moneda_destino === moneda);
   const tasaValor = moneda === 'USD' ? '1.00' : tasaObj ? Number(tasaObj.tasa).toFixed(2) : '—';
@@ -121,54 +128,78 @@ export const HeaderGlobal: React.FC<HeaderGlobalProps> = ({
 
       {/* NIVEL 2: HEADER PRINCIPAL MARKETPLACE (#FFFFFF o #0F172A en Seguridad) */}
       <header className={`mp-main-header ${modoSeguridad ? 'security-mode' : ''}`}>
-        <button className="mp-brand-btn" onClick={() => onNavegar('TIENDA')}>
+        <button className="mp-brand-btn" onClick={() => onNavegar(destinoLogo)}>
           <span className="mp-brand-logo">
             {modoSeguridad ? <ShieldCheck size={20} /> : <Globe size={20} />}
           </span>
           <div>
             <div className="mp-brand-title">{t.marca}</div>
             <div className="mp-brand-sub">
-              {modoSeguridad ? 'SEGURIDAD AUTÓNOMA (RN20)' : 'Global Marketplace • INF-241'}
+              {modoSeguridad
+                ? 'SEGURIDAD AUTÓNOMA (RN20)'
+                : esInterno
+                  ? `Panel Interno RBAC • ${usuario?.rol}`
+                  : 'Global Marketplace • INF-241'}
             </div>
           </div>
         </button>
 
-        {/* Barra de Búsqueda Central Redondeada con Categoría Integrada */}
-        <form className="mp-search-pill" onSubmit={handleSubmitSearch}>
-          <select
-            aria-label="Categoría de búsqueda"
-            className="mp-search-cat"
-            value={categoria}
-            onChange={(e) => {
-              setCategoria(e.target.value);
-              if (pestanaActiva !== 'TIENDA') onNavegar('TIENDA');
-            }}
-          >
-            {categorias.map((c) => (
-              <option key={c} value={c}>
-                {c === 'TODAS' ? t.todasCategorias : c}
-              </option>
-            ))}
-          </select>
-          <input
-            className="mp-search-input"
-            value={busqueda}
-            placeholder={t.buscarPlaceholder}
-            onChange={(e) => setBusqueda(e.target.value)}
-          />
-          <button type="submit" className="mp-search-btn" aria-label={t.buscarBtn}>
-            <Search size={16} /> <span>{t.buscarBtn}</span>
-          </button>
-        </form>
+        {/* Barra de Búsqueda Central solo para Tienda / Clientes; para Funcionarios muestra indicador de rol RBAC */}
+        {!esInterno ? (
+          <form className="mp-search-pill" onSubmit={handleSubmitSearch}>
+            <select
+              aria-label="Categoría de búsqueda"
+              className="mp-search-cat"
+              value={categoria}
+              onChange={(e) => {
+                setCategoria(e.target.value);
+                if (pestanaActiva !== 'TIENDA') onNavegar('TIENDA');
+              }}
+            >
+              {categorias.map((c) => (
+                <option key={c} value={c}>
+                  {c === 'TODAS' ? t.todasCategorias : c}
+                </option>
+              ))}
+            </select>
+            <input
+              className="mp-search-input"
+              value={busqueda}
+              placeholder={t.buscarPlaceholder}
+              onChange={(e) => setBusqueda(e.target.value)}
+            />
+            <button type="submit" className="mp-search-btn" aria-label={t.buscarBtn}>
+              <Search size={16} /> <span>{t.buscarBtn}</span>
+            </button>
+          </form>
+        ) : (
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <span
+              className="mono"
+              style={{
+                fontSize: '12px',
+                padding: '6px 14px',
+                borderRadius: '999px',
+                backgroundColor: modoSeguridad ? 'rgba(217, 119, 6, 0.16)' : '#F1F5F9',
+                color: modoSeguridad ? '#FBBF24' : 'var(--color-text-muted)',
+                border: modoSeguridad ? '1px solid rgba(217, 119, 6, 0.45)' : '1px solid var(--color-border)'
+              }}
+            >
+              Sesión Interna Aislada (RNF02) • Rol: <strong>{usuario?.rol}</strong>
+            </span>
+          </div>
+        )}
 
-        {/* Acciones Derecha: Usuario/Pedidos, Rastreo CU08, Panel RBAC y Carrito */}
+        {/* Acciones Derecha: estrictamente filtradas por rol */}
         <div className="mp-header-actions">
-          <button
-            className={`mp-action-btn ${pestanaActiva === 'RASTREO' ? 'active' : ''}`}
-            onClick={() => onNavegar('RASTREO')}
-          >
-            <Radar size={16} /> {t.rastrearEnvioCorto}
-          </button>
+          {puedeRastrear && (
+            <button
+              className={`mp-action-btn ${pestanaActiva === 'RASTREO' ? 'active' : ''}`}
+              onClick={() => onNavegar('RASTREO')}
+            >
+              <Radar size={16} /> {t.rastrearEnvioCorto}
+            </button>
+          )}
 
           {usuario ? (
             <>
@@ -218,18 +249,20 @@ export const HeaderGlobal: React.FC<HeaderGlobalProps> = ({
             </button>
           )}
 
-          {/* Carrito con contador animado */}
-          <button className="mp-cart-btn" onClick={onAbrirCarrito} aria-label="Abrir carrito">
-            <ShoppingCart size={17} />
-            <span key={cantidadCarrito} className="cart-count-badge">
-              {cantidadCarrito}
-            </span>
-          </button>
+          {/* Carrito únicamente visible para visitantes y clientes (nunca para funcionarios internos) */}
+          {!esInterno && (
+            <button className="mp-cart-btn" onClick={onAbrirCarrito} aria-label="Abrir carrito">
+              <ShoppingCart size={17} />
+              <span key={cantidadCarrito} className="cart-count-badge">
+                {cantidadCarrito}
+              </span>
+            </button>
+          )}
         </div>
       </header>
 
-      {/* NIVEL 3: BARRA DE CATEGORÍAS HORIZONTAL RÁPIDA */}
-      {!modoSeguridad && (pestanaActiva === 'TIENDA' || pestanaActiva === 'RASTREO' || pestanaActiva === 'MIS_PEDIDOS') && (
+      {/* NIVEL 3: BARRA DE CATEGORÍAS HORIZONTAL RÁPIDA (solo visitantes y clientes) */}
+      {!esInterno && !modoSeguridad && (pestanaActiva === 'TIENDA' || pestanaActiva === 'RASTREO' || pestanaActiva === 'MIS_PEDIDOS') && (
         <nav className="mp-cat-bar" aria-label="Categorías rápidas">
           <div className="mp-cat-list">
             {categorias.map((c) => (

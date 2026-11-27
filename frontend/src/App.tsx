@@ -72,8 +72,14 @@ export default function App() {
     cargarParametros();
   }, []);
 
-  // Control de acceso estricto en navegación (incluyendo CU08 Rastrear Envío)
+  // Control de acceso estricto en navegación (RBAC + CU08 Rastrear Envío)
   const navegarConControl = (destino: VistaActiva) => {
+    if (usuario?.tipoCuenta === 'INTERNO' && (destino === 'TIENDA' || destino === 'MIS_PEDIDOS')) {
+      const panelPropio: VistaActiva = usuario.rol === 'OFICIAL_SEGURIDAD' ? 'SEGURIDAD' : 'OPERATIVO';
+      setPestana(panelPropio);
+      return;
+    }
+
     if (destino === 'RASTREO') {
       if (!usuario || !token) {
         setDestinoPostLogin('RASTREO');
@@ -118,12 +124,15 @@ export default function App() {
           setPestana('TIENDA');
         }
       } else if (resp.usuario.rol === 'OFICIAL_SEGURIDAD') {
+        setCarritoAbierto(false);
         setDestinoPostLogin(null);
         setPestana('SEGURIDAD');
       } else if (destinoPostLogin === 'RASTREO' && (resp.usuario.rol === 'LOGISTICA' || resp.usuario.rol === 'GESTOR_PEDIDOS')) {
+        setCarritoAbierto(false);
         setDestinoPostLogin(null);
         setPestana('RASTREO');
       } else {
+        setCarritoAbierto(false);
         setDestinoPostLogin(null);
         setPestana('OPERATIVO');
       }
@@ -177,6 +186,9 @@ export default function App() {
     }
     setToken(null);
     setUsuario(null);
+    setDestinoPostLogin(null);
+    setGuiaRastreo('');
+    setCarritoAbierto(false);
     setPestana('TIENDA');
     toastInfo('Sesión finalizada correctamente');
   };

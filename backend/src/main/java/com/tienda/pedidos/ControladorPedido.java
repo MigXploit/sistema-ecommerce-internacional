@@ -150,7 +150,7 @@ public class ControladorPedido {
     }
 
     @GetMapping("/api/pedidos")
-    public List<Map<String, Object>> listarPedidos(HttpServletRequest httpReq) {
+    public ResponseEntity<?> listarPedidos(HttpServletRequest httpReq) {
         var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
         List<Map<String, Object>> pedidos;
         if ("CLIENTE".equals(sesion.tipoCuenta())) {
@@ -163,7 +163,7 @@ public class ControladorPedido {
                 WHERE p.id_cliente = ?
                 ORDER BY p.id_pedido DESC
             """, sesion.idSujeto());
-        } else {
+        } else if (Set.of("GESTOR_PEDIDOS", "LOGISTICA", "FACTURACION", "GERENTE").contains(sesion.rol())) {
             pedidos = jdbc.queryForList("""
                 SELECT p.*, d.pais AS pais_destino, d.ciudad, d.linea_direccion, d.codigo_postal,
                        c.nombres || ' ' || c.apellidos AS nombre_cliente, c.correo
@@ -172,6 +172,11 @@ public class ControladorPedido {
                 JOIN cliente c ON c.id_cliente = p.id_cliente
                 ORDER BY p.id_pedido DESC
             """);
+        } else {
+            auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "ACCESO_PEDIDOS_NO_AUTORIZADO",
+                    "PEDIDO", null, "BLOQUEADO_403", "Rol " + sesion.rol() + " sin permiso sobre pedidos de clientes");
+            return ResponseEntity.status(403).body(Map.of(
+                    "mensaje", "RNF02: El rol " + sesion.rol() + " no tiene acceso al listado de pedidos de clientes."));
         }
 
         List<Map<String, Object>> enriquecidos = new ArrayList<>();
@@ -198,7 +203,7 @@ public class ControladorPedido {
             """, idPedido));
             enriquecidos.add(copia);
         }
-        return enriquecidos;
+        return ResponseEntity.ok(enriquecidos);
     }
 
     @PostMapping("/api/pedidos/{idPedido}/cancelar")
@@ -212,6 +217,9 @@ public class ControladorPedido {
         int idCliente = ((Number) ped.get("id_cliente")).intValue();
         if ("CLIENTE".equals(sesion.tipoCuenta()) && sesion.idSujeto() != idCliente) {
             return ResponseEntity.status(403).body(Map.of("mensaje", "No tiene permisos para cancelar pedidos de otro cliente."));
+        }
+        if ("INTERNO".equals(sesion.tipoCuenta()) && !"GESTOR_PEDIDOS".equals(sesion.rol())) {
+            return ResponseEntity.status(403).body(Map.of("mensaje", "RNF02: Solo el Gestor de Pedidos puede cancelar pedidos internamente."));
         }
 
         String estadoActual = (String) ped.get("estado");

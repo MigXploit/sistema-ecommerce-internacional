@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 export interface ColumnaTabla<T = any> {
@@ -30,6 +30,10 @@ export function OperationalTable<T = any>({
   emptyMessage = 'No se encontraron registros para el criterio seleccionado.'
 }: OperationalTableProps<T>) {
   const [pagina, setPagina] = useState(1);
+
+  useEffect(() => {
+    setPagina(1);
+  }, [datos.length]);
 
   const totalPaginas = Math.max(1, Math.ceil(datos.length / filasPorPagina));
   const paginaSegura = Math.min(pagina, totalPaginas);

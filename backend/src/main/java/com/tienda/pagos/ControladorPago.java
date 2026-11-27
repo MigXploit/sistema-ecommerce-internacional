@@ -66,6 +66,10 @@ public class ControladorPago {
             return ResponseEntity.notFound().build();
         }
         Map<String, Object> ped = peds.get(0);
+        if (!"CLIENTE".equals(sesion.tipoCuenta()) || ((Number) ped.get("id_cliente")).intValue() != sesion.idSujeto()) {
+            return ResponseEntity.status(403).body(Map.of(
+                    "mensaje", "RNF02: Solo el cliente titular del pedido puede autorizar el cobro internacional."));
+        }
         if (!"CREADO".equals(ped.get("estado"))) {
             return ResponseEntity.badRequest().body(Map.of(
                     "mensaje", "CU05: El pedido #" + req.idPedido() + " ya se encuentra en estado " + ped.get("estado") + "."));
@@ -156,6 +160,10 @@ public class ControladorPago {
         var peds = jdbc.queryForList("SELECT * FROM pedido WHERE id_pedido = ?", req.idPedido());
         if (peds.isEmpty()) return ResponseEntity.notFound().build();
         Map<String, Object> ped = peds.get(0);
+        if (!"CLIENTE".equals(sesion.tipoCuenta()) || ((Number) ped.get("id_cliente")).intValue() != sesion.idSujeto()) {
+            return ResponseEntity.status(403).body(Map.of(
+                    "mensaje", "RNF02: Solo el cliente titular del pedido puede registrar una solicitud de devolución."));
+        }
 
         String estadoPed = (String) ped.get("estado");
         if (!"ENTREGADO".equals(estadoPed) && !"PAGADO".equals(estadoPed) && !"DEVUELTO".equals(estadoPed)) {

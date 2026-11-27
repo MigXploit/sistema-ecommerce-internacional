@@ -110,8 +110,7 @@ public class FiltroSeguridadRbac extends OncePerRequestFilter {
         if (path.equals("/api/salud")) return true;
         if ("GET".equalsIgnoreCase(method) && (
                 path.startsWith("/api/catalogo") ||
-                path.startsWith("/api/parametros/publicos") ||
-                path.startsWith("/api/envios/seguimiento")
+                path.startsWith("/api/parametros/publicos")
         )) {
             return true;
         }
@@ -139,6 +138,10 @@ public class FiltroSeguridadRbac extends OncePerRequestFilter {
         if (path.startsWith("/api/envios/gestion")) {
             return Set.of("LOGISTICA");
         }
+        // CU08: Seguimiento logístico autenticado (solo Cliente dueño, Logística o Gestor de Pedidos)
+        if (path.startsWith("/api/envios/seguimiento")) {
+            return Set.of("CLIENTE", "LOGISTICA", "GESTOR_PEDIDOS");
+        }
         // CU09: Gestión tributaria de facturas y notas de crédito
         if (path.startsWith("/api/facturacion/gestion")) {
             return Set.of("FACTURACION", "GERENTE");
@@ -147,7 +150,11 @@ public class FiltroSeguridadRbac extends OncePerRequestFilter {
         if (path.startsWith("/api/postventa/gestion")) {
             return Set.of("GESTOR_PEDIDOS");
         }
-        // Endpoints autenticados generales (clientes e internos según su propio contexto)
+        // RF05 / RF06 / CU10: Perfil, direcciones y notificaciones privadas exclusivas de CLIENTE
+        if (path.startsWith("/api/clientes/")) {
+            return Set.of("CLIENTE");
+        }
+        // Endpoints autenticados generales (pedidos/pagos validan titularidad y rol en controlador)
         return Set.of();
     }
 

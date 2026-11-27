@@ -84,18 +84,19 @@ public class ControladorEnvio {
     }
 
     /**
-     * CU08 / RF15: Seguimiento logístico público o autenticado por número de guía internacional
-     * (también acepta búsqueda por #ID de pedido para comodidad del cliente).
+     * CU08 / RF15: Seguimiento logístico autenticado por número de guía internacional
+     * (solo el cliente dueño del pedido, LOGISTICA o GESTOR_PEDIDOS).
      */
     @GetMapping("/api/envios/seguimiento/{codigo}")
-    public ResponseEntity<?> consultarSeguimientoLogistico(@PathVariable String codigo) {
+    public ResponseEntity<?> consultarSeguimientoLogistico(@PathVariable String codigo, HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
         String limpio = codigo != null ? codigo.trim() : "";
         if (limpio.isBlank()) {
             return ResponseEntity.badRequest().body(Map.of("mensaje", "Debe ingresar un número de guía internacional."));
         }
 
         List<Map<String, Object>> envios = jdbc.queryForList("""
-            SELECT e.*, p.estado AS estado_pedido, p.fecha AS fecha_pedido, p.moneda, p.total,
+            SELECT e.*, p.id_cliente, p.estado AS estado_pedido, p.fecha AS fecha_pedido, p.moneda, p.total,
                    p.peso_tasable, p.tipo_venta, p.idioma_operacion,
                    d.pais AS pais_destino, pp.nombre AS nombre_pais, d.ciudad, d.codigo_postal,
                    c.nombres || ' ' || c.apellidos AS nombre_cliente
@@ -110,7 +111,7 @@ public class ControladorEnvio {
         if (envios.isEmpty() && limpio.replace("#", "").matches("\\d+")) {
             int idPed = Integer.parseInt(limpio.replace("#", ""));
             envios = jdbc.queryForList("""
-                SELECT e.*, p.estado AS estado_pedido, p.fecha AS fecha_pedido, p.moneda, p.total,
+                SELECT e.*, p.id_cliente, p.estado AS estado_pedido, p.fecha AS fecha_pedido, p.moneda, p.total,
                        p.peso_tasable, p.tipo_venta, p.idioma_operacion,
                        d.pais AS pais_destino, pp.nombre AS nombre_pais, d.ciudad, d.codigo_postal,
                        c.nombres || ' ' || c.apellidos AS nombre_cliente
@@ -129,6 +130,14 @@ public class ControladorEnvio {
         }
 
         Map<String, Object> env = new LinkedHashMap<>(envios.get(0));
+        int idClienteEnvio = ((Number) env.get("id_cliente")).intValue();
+        if ("CLIENTE".equals(sesion.tipoCuenta()) && sesion.idSujeto() != idClienteEnvio) {
+            auditoria.registrar(null, sesion.identificador(), "ACCESO_GUIA_AJENA_DENEGADO",
+                    "ENVIO", ((Number) env.get("id_envio")).intValue(), "BLOQUEADO_403",
+                    "Cliente intentó rastrear guía perteneciente a otro titular");
+            return ResponseEntity.status(403).body(Map.of(
+                    "mensaje", "CU08 / RNF02: Solo puede consultar el seguimiento de sus propios envíos internacionales."));
+        }
         int idPedido = ((Number) env.get("id_pedido")).intValue();
         List<Map<String, String>> eventos;
         try {
