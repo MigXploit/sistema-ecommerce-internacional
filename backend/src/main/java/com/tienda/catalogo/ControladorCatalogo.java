@@ -50,6 +50,7 @@ public class ControladorCatalogo {
             @RequestParam(defaultValue = "USD") String moneda,
             @RequestParam(required = false) String categoria,
             @RequestParam(required = false) String q,
+            @RequestParam(required = false) BigDecimal precioMin,
             @RequestParam(required = false) BigDecimal precioMax,
             @RequestParam(defaultValue = "false") boolean incluirInactivos,
             @RequestParam(required = false) String paisCliente
@@ -89,6 +90,9 @@ public class ControladorCatalogo {
             if (q != null && !q.isBlank()) {
                 String texto = (prod.get("nombre_localizado") + " " + prod.get("descripcion_localizada") + " " + prod.get("codigo")).toLowerCase();
                 if (!texto.contains(q.trim().toLowerCase())) continue;
+            }
+            if (precioMin != null && precioConvertido.compareTo(precioMin) < 0) {
+                continue;
             }
             if (precioMax != null && precioConvertido.compareTo(precioMax) > 0) {
                 continue;
@@ -221,11 +225,16 @@ public class ControladorCatalogo {
 
     @PostMapping("/api/catalogo/sincronizar-tasas")
     @Transactional
-    public Map<String, Object> sincronizarTasasCambio(HttpServletRequest httpReq) {
+    public Map<String, Object> sincronizarTasasCambio(
+            @RequestParam(defaultValue = "false") boolean simularFallaProveedor,
+            HttpServletRequest httpReq) {
         var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
         boolean alertaFallback = false;
         Map<String, BigDecimal> tasas;
         try {
+            if (simularFallaProveedor) {
+                throw new IllegalStateException("Simulación controlada de caída del proveedor externo de divisas");
+            }
             tasas = adaptadores.obtenerTasasProveedorExterno();
             for (var entry : tasas.entrySet()) {
                 jdbc.update("INSERT INTO tipo_cambio (moneda_origen, moneda_destino, tasa) VALUES ('USD', ?, ?)",

@@ -1,4 +1,5 @@
 import React from 'react';
+import { Lock, Minus, Package, Plus, ShieldCheck, ShoppingCart, Trash2, X } from 'lucide-react';
 import { IdiomaCode, MonedaCode, TEXTOS } from '../i18n';
 import { StatusBadge } from './StatusBadge';
 
@@ -8,6 +9,8 @@ export interface ItemCarrito {
 }
 
 interface CheckoutStepperProps {
+  abierto: boolean;
+  onCerrar: () => void;
   idioma: IdiomaCode;
   moneda: MonedaCode;
   carrito: ItemCarrito[];
@@ -16,6 +19,7 @@ interface CheckoutStepperProps {
   tipoVenta: 'MINORISTA' | 'MAYORISTA' | 'PROMOCIONAL';
   setTipoVenta: (tv: 'MINORISTA' | 'MAYORISTA' | 'PROMOCIONAL') => void;
   onCambiarCantidad: (idProducto: number, delta: number) => void;
+  onVaciarCarrito: () => void;
   autenticadoComoCliente: boolean;
   direcciones: any[];
   idDireccionSel: number | null;
@@ -44,6 +48,8 @@ interface CheckoutStepperProps {
 }
 
 export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
+  abierto,
+  onCerrar,
   idioma,
   moneda,
   carrito,
@@ -52,6 +58,7 @@ export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
   tipoVenta,
   setTipoVenta,
   onCambiarCantidad,
+  onVaciarCarrito,
   autenticadoComoCliente,
   direcciones,
   idDireccionSel,
@@ -85,14 +92,31 @@ export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
     0
   );
 
+  if (!abierto) return null;
+
   return (
-    <aside className="card checkout-panel">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-        <h3 className="section-subtitle" style={{ margin: 0 }}>{t.carritoTitulo}</h3>
-        <span className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-          {unidadesTotales} uds • {moneda}
-        </span>
-      </div>
+    <div
+      className="drawer-backdrop"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCerrar();
+      }}
+    >
+      <aside className="drawer-panel" role="dialog" aria-label={t.carritoTitulo}>
+        <div className="drawer-header">
+          <div>
+            <h3 className="section-subtitle icon-inline" style={{ margin: 0, fontSize: '18px' }}>
+              <ShoppingCart size={19} /> {t.carritoTitulo}
+            </h3>
+            <span className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+              {unidadesTotales} uds • Moneda activa: {moneda}
+            </span>
+          </div>
+          <button className="btn btn-sm btn-outline" onClick={onCerrar} aria-label="Cerrar carrito">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="drawer-body">
 
       {/* Barra de 4 pasos (RNF12) */}
       <div className="stepper-header">
@@ -117,7 +141,7 @@ export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
             </div>
           </div>
           <button className="btn btn-primary" onClick={onIrAMisPedidos}>
-            📦 {t.verFacturaTracking} →
+            <Package size={16} /> {t.verFacturaTracking}
           </button>
         </div>
       ) : carrito.length === 0 && !pedidoCreado ? (
@@ -146,9 +170,22 @@ export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
                       </div>
                     </div>
                     <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                      <button className="btn btn-sm btn-outline mono" onClick={() => onCambiarCantidad(it.producto.id_producto, -1)}>−</button>
+                      <button className="btn btn-sm btn-outline mono" onClick={() => onCambiarCantidad(it.producto.id_producto, -1)} aria-label="Reducir">
+                        <Minus size={14} />
+                      </button>
                       <strong className="mono" style={{ minWidth: '22px', textAlign: 'center' }}>{it.cantidad}</strong>
-                      <button className="btn btn-sm btn-outline mono" onClick={() => onCambiarCantidad(it.producto.id_producto, 1)}>+</button>
+                      <button className="btn btn-sm btn-outline mono" onClick={() => onCambiarCantidad(it.producto.id_producto, 1)} aria-label="Aumentar">
+                        <Plus size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-trash-item"
+                        title={t.eliminarItemCarrito}
+                        aria-label={t.eliminarItemCarrito}
+                        onClick={() => onCambiarCantidad(it.producto.id_producto, -it.cantidad)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -171,9 +208,18 @@ export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
                 </div>
               </div>
 
-              <button className="btn btn-primary" onClick={() => setPaso(2)}>
-                {t.irPaso2}
-              </button>
+              <div style={{ display: 'grid', gap: '10px' }}>
+                <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => setPaso(2)}>
+                  {t.irPaso2}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-clear-cart"
+                  onClick={onVaciarCarrito}
+                >
+                  <Trash2 size={15} /> {t.vaciarCarrito}
+                </button>
+              </div>
             </div>
           )}
 
@@ -340,7 +386,7 @@ export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
               </div>
 
               <div className="pci-shield-box">
-                <span style={{ fontSize: '18px' }}>🛡️</span>
+                <ShieldCheck size={20} style={{ flexShrink: 0, marginTop: '2px' }} />
                 <div>{t.insigniaPci}</div>
               </div>
 
@@ -355,12 +401,14 @@ export const CheckoutStepper: React.FC<CheckoutStepperProps> = ({
               </label>
 
               <button className="btn btn-accent" onClick={onEjecutarPagoPaso4}>
-                🔒 {t.pagarAhora} ({Number(pedidoCreado.desglose.total).toFixed(2)} {pedidoCreado.desglose.moneda})
+                <Lock size={16} /> {t.pagarAhora} ({Number(pedidoCreado.desglose.total).toFixed(2)} {pedidoCreado.desglose.moneda})
               </button>
             </div>
           )}
         </div>
       )}
-    </aside>
+        </div>
+      </aside>
+    </div>
   );
 };

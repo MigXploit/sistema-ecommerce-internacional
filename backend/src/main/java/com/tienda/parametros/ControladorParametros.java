@@ -10,6 +10,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -39,7 +45,7 @@ public class ControladorParametros {
         var idiomas = jdbc.queryForList("SELECT * FROM param_idioma WHERE habilitado = TRUE ORDER BY es_defecto DESC, codigo_idioma ASC");
         var paises = jdbc.queryForList("SELECT * FROM param_pais ORDER BY habilitado DESC, nombre ASC");
         var operadores = jdbc.queryForList("SELECT * FROM param_operador_logistico WHERE activo = TRUE ORDER BY tarifa_base_usd ASC");
-        var tasas = jdbc.queryForList("""
+        var tasasRaw = jdbc.queryForList("""
             SELECT tc.moneda_destino, tc.tasa, tc.fecha
             FROM tipo_cambio tc
             WHERE tc.id_tipo_cambio IN (
@@ -47,6 +53,17 @@ public class ControladorParametros {
             )
             ORDER BY tc.moneda_destino
         """);
+        List<Map<String, Object>> tasas = new ArrayList<>();
+        for (var t : tasasRaw) {
+            Map<String, Object> fila = new LinkedHashMap<>(t);
+            Object fObj = t.get("fecha");
+            boolean vigente = true;
+            if (fObj instanceof Timestamp ts) {
+                vigente = Duration.between(ts.toInstant(), Instant.now()).toHours() <= 24;
+            }
+            fila.put("vigente24h", vigente);
+            tasas.add(fila);
+        }
         return Map.of(
                 "monedas", monedas,
                 "idiomas", idiomas,
@@ -54,6 +71,93 @@ public class ControladorParametros {
                 "operadores", operadores,
                 "tasasCambio", tasas
         );
+    }
+
+    @GetMapping("/api/parametros/aranceles")
+    public List<Map<String, Object>> listarAranceles() {
+        return jdbc.queryForList("""
+            SELECT a.*, p.nombre AS nombre_pais
+            FROM param_arancel a
+            JOIN param_pais p ON p.codigo_pais = a.codigo_pais
+            ORDER BY a.codigo_pais, a.codigo_arancelario
+        """);
+    }
+
+    public record GuardarArancelReq(String codigoPais, String codigoArancelario, BigDecimal tasaArancel, boolean restringido) {}
+
+    @PostMapping("/api/parametros/aranceles")
+    @Transactional
+    public ResponseEntity<?> guardarArancel(@RequestBody GuardarArancelReq req, HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
+        if (req.tasaArancel() == null || req.tasaArancel().compareTo(BigDecimal.ZERO) < 0 || req.tasaArancel().compareTo(BigDecimal.ONE) > 0) {
+            return ResponseEntity.badRequest().body(Map.of("mensaje", "La tasa arancelaria debe estar entre 0.00 y 1.00."));
+        }
+        String pais = req.codigoPais().trim().toUpperCase();
+        String hs = req.codigoArancelario().trim();
+        Integer existe = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM param_arancel WHERE codigo_pais = ? AND codigo_arancelario = ?",
+                Integer.class, pais, hs);
+        if (existe != null && existe > 0) {
+            jdbc.update("""
+                UPDATE param_arancel SET tasa_arancel = ?, restringido = ?
+                WHERE codigo_pais = ? AND codigo_arancelario = ?
+            """, req.tasaArancel(), req.restringido(), pais, hs);
+        } else {
+            jdbc.update("""
+                INSERT INTO param_arancel (codigo_pais, codigo_arancelario, tasa_arancel, restringido)
+                VALUES (?, ?, ?, ?)
+            """, pais, hs, req.tasaArancel(), req.restringido());
+        }
+        auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "CONFIGURACION_ARANCEL_HS",
+                "PARAM_ARANCEL", null, "EXITOSO", "Arancel " + pais + "/" + hs + " tasa=" + req.tasaArancel() + " restringido=" + req.restringido());
+        return ResponseEntity.ok(Map.of("mensaje", "Partida arancelaria HS " + hs + " para " + pais + " guardada y auditada."));
+    }
+
+    public record GuardarOperadorReq(String codigoOperador, String nombre, BigDecimal tarifaBaseUsd, int diasEstimados, boolean activo) {}
+
+    @PostMapping("/api/parametros/operadores")
+    @Transactional
+    public ResponseEntity<?> guardarOperadorLogistico(@RequestBody GuardarOperadorReq req, HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
+        if (req.tarifaBaseUsd() == null || req.tarifaBaseUsd().compareTo(BigDecimal.ZERO) <= 0 || req.diasEstimados() <= 0) {
+            return ResponseEntity.badRequest().body(Map.of("mensaje", "La tarifa base y los días estimados deben ser mayores a cero."));
+        }
+        String cod = req.codigoOperador().trim().toUpperCase();
+        Integer existe = jdbc.queryForObject("SELECT COUNT(*) FROM param_operador_logistico WHERE codigo_operador = ?", Integer.class, cod);
+        if (existe != null && existe > 0) {
+            jdbc.update("""
+                UPDATE param_operador_logistico SET nombre = ?, tarifa_base_usd = ?, dias_estimados = ?, activo = ?
+                WHERE codigo_operador = ?
+            """, req.nombre().trim(), req.tarifaBaseUsd(), req.diasEstimados(), req.activo(), cod);
+        } else {
+            jdbc.update("""
+                INSERT INTO param_operador_logistico (codigo_operador, nombre, tarifa_base_usd, dias_estimados, activo)
+                VALUES (?, ?, ?, ?, ?)
+            """, cod, req.nombre().trim(), req.tarifaBaseUsd(), req.diasEstimados(), req.activo());
+        }
+        auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "CONFIGURACION_OPERADOR_LOGISTICO",
+                "PARAM_OPERADOR_LOGISTICO", null, "EXITOSO", "Operador " + cod + " tarifa=" + req.tarifaBaseUsd() + " USD");
+        return ResponseEntity.ok(Map.of("mensaje", "Operador logístico '" + cod + "' actualizado sin recompilar (RNF09)."));
+    }
+
+    public record GuardarIdiomaReq(String codigoIdioma, String nombre, boolean habilitado) {}
+
+    @PostMapping("/api/parametros/idiomas")
+    @Transactional
+    public ResponseEntity<?> guardarIdioma(@RequestBody GuardarIdiomaReq req, HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
+        String cod = req.codigoIdioma().trim().toUpperCase();
+        Integer existe = jdbc.queryForObject("SELECT COUNT(*) FROM param_idioma WHERE codigo_idioma = ?", Integer.class, cod);
+        if (existe != null && existe > 0) {
+            jdbc.update("UPDATE param_idioma SET nombre = ?, habilitado = ? WHERE codigo_idioma = ?",
+                    req.nombre().trim(), req.habilitado(), cod);
+        } else {
+            jdbc.update("INSERT INTO param_idioma (codigo_idioma, nombre, es_defecto, habilitado) VALUES (?, ?, FALSE, ?)",
+                    cod, req.nombre().trim(), req.habilitado());
+        }
+        auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "CONFIGURACION_IDIOMA_PORTAL",
+                "PARAM_IDIOMA", null, "EXITOSO", "Idioma " + cod + " habilitado=" + req.habilitado());
+        return ResponseEntity.ok(Map.of("mensaje", "Idioma '" + cod + "' guardado en parámetros operativos."));
     }
 
     public record GuardarPaisReq(

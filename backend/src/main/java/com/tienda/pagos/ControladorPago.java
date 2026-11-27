@@ -299,7 +299,11 @@ public class ControladorPago {
                 BigDecimal.class, idPago);
         BigDecimal montoFinal = req.montoAutorizado() != null ? req.montoAutorizado() : (BigDecimal) r.get("monto");
 
-        if (acumuladoPrevio.add(montoFinal).compareTo(montoPago) > 0) {
+        if (montoFinal == null || montoFinal.compareTo(BigDecimal.ZERO) <= 0) {
+            return ResponseEntity.badRequest().body(Map.of("mensaje", "El monto autorizado debe ser mayor a cero."));
+        }
+        BigDecimal nuevoAcumulado = acumuladoPrevio.add(montoFinal);
+        if (nuevoAcumulado.compareTo(montoPago) > 0) {
             return ResponseEntity.badRequest().body(Map.of(
                     "mensaje", "RN10: El reembolso acumulado excedería el 100% del pago original (" + montoPago + " " + r.get("moneda") + ")."));
         }
@@ -322,7 +326,10 @@ public class ControladorPago {
             WHERE id_reembolso = ?
         """, montoFinal, sesion.idSujeto(), idReembolso);
 
-        jdbc.update("UPDATE pago SET estado = 'REEMBOLSADO' WHERE id_pago = ?", idPago);
+        boolean esTotal = nuevoAcumulado.compareTo(montoPago) >= 0;
+        if (esTotal) {
+            jdbc.update("UPDATE pago SET estado = 'REEMBOLSADO' WHERE id_pago = ?", idPago);
+        }
         jdbc.update("UPDATE pedido SET estado = 'DEVUELTO' WHERE id_pedido = ?", idPedido);
 
         Map<String, Object> notaCredito = facturacion.emitirNotaCreditoVinculada(
@@ -333,14 +340,17 @@ public class ControladorPago {
 
         auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "APROBACION_REEMBOLSO_AISLAMIENTO_RN19",
                 "REEMBOLSO", idReembolso, "EXITOSO",
-                "Reembolso controlado de " + montoFinal + " " + r.get("moneda") + ", unidades aisladas="
+                "Reembolso " + (esTotal ? "total" : "parcial") + " de " + montoFinal + " " + r.get("moneda") + ", unidades aisladas="
                         + unidadesMalas + ", Nota de Crédito " + notaCredito.get("numero"));
 
         return ResponseEntity.ok(Map.of(
                 "estado", "APROBADO",
+                "reembolsoParcial", !esTotal,
+                "saldoRestante", montoPago.subtract(nuevoAcumulado),
                 "notaCredito", notaCredito,
                 "unidadesAisladasCuarentena", unidadesMalas,
-                "mensaje", "Devolución aprobada: unidades aisladas fuera de stock vendible (RN19), reembolso procesado y Nota de Crédito " + notaCredito.get("numero") + " emitida."
+                "mensaje", "Devolución aprobada (" + (esTotal ? "reembolso total" : "reembolso parcial")
+                        + "): unidades aisladas fuera de stock vendible (RN19) y Nota de Crédito " + notaCredito.get("numero") + " emitida."
         ));
     }
 }

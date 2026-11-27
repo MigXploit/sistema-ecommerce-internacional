@@ -357,3 +357,76 @@ export async function modalErrorValidacionOAduana(params: {
     }
   });
 }
+
+/**
+ * Confirmación SweetAlert2 antes de vaciar el carrito en el Paso 1 (CU03).
+ */
+export async function modalConfirmarVaciarCarrito(idioma: IdiomaCode, cantidadItems: number): Promise<boolean> {
+  const t = TEXTOS[idioma];
+  const res = await ModalBase.fire({
+    icon: 'warning',
+    title: '¿Vaciar el carrito internacional?',
+    html: `
+      <div class="agy-swal-summary-box">
+        Se retirarán <span class="agy-swal-code">${cantidadItems} unidad(es)</span> del carrito actual y se reiniciará la cotización aduanera.
+      </div>
+    `,
+    showCancelButton: true,
+    confirmButtonText: '🗑️ Sí, Vaciar Carrito',
+    cancelButtonText: t.cancelar,
+    customClass: {
+      popup: 'agy-swal-popup',
+      title: 'agy-swal-title',
+      htmlContainer: 'agy-swal-html',
+      confirmButton: 'btn btn-danger agy-swal-btn',
+      cancelButton: 'btn btn-outline agy-swal-btn'
+    }
+  });
+  return res.isConfirmed;
+}
+
+/**
+ * Modal de Inmutabilidad en "Mis Pedidos" al intentar limpiar pedidos con pago o factura (RN05 / RN16).
+ * Incluye botón opcional "Restaurar datos demo iniciales" para presentaciones académicas.
+ */
+export async function modalLimpiarPedidosInmutablesRn16(params: {
+  canceladosCount: number;
+  protegidosCount: number;
+  facturasEjemplo: string[];
+}): Promise<'RESTAURAR_DEMO' | 'CERRAR'> {
+  const listaFacs = params.facturasEjemplo.slice(0, 3).map((f) => `<span class="agy-swal-code">${f}</span>`).join(' ');
+  const res = await ModalBase.fire({
+    icon: 'info',
+    title: 'Protección de Historial e Inmutabilidad Tributaria (RN05 / RN16)',
+    html: `
+      <div class="agy-swal-security-box">
+        ${
+          params.canceladosCount > 0
+            ? `<div style="margin-bottom:8px;color:#166534;font-weight:700;">✓ Se cancelaron ${params.canceladosCount} pedido(s) pendientes en estado CREADO (CREADO → CANCELADO, RN05).</div>`
+            : ''
+        }
+        <div style="margin-bottom:8px;">
+          <span class="agy-swal-code" style="background:#FEF3C7;color:#92400E;border-color:#D97706;">
+            🔒 RN05 / RN16 • SIN BORRADO FÍSICO
+          </span>
+        </div>
+        <div style="font-size:13px;color:#0F172A;line-height:1.5;">
+          Tienes <b>${params.protegidosCount} pedido(s)</b> pagados, despachados o respaldados con comprobante tributario inmutable
+          ${listaFacs ? `(${listaFacs})` : ''}.
+          Por cumplimiento de <b>RN05</b> y <b>RN16</b>, los pedidos con pago confirmado y facturas emitidas <b>no pueden eliminarse físicamente</b>; toda corrección se gestiona mediante devolución y Nota de Crédito vinculada.
+        </div>
+      </div>
+    `,
+    showDenyButton: true,
+    confirmButtonText: 'Entendido',
+    denyButtonText: '🔄 Restaurar datos demo iniciales',
+    customClass: {
+      popup: 'agy-swal-popup agy-swal-security',
+      title: 'agy-swal-title',
+      htmlContainer: 'agy-swal-html',
+      confirmButton: 'btn btn-primary agy-swal-btn',
+      denyButton: 'btn btn-amber agy-swal-btn'
+    }
+  });
+  return res.isDenied ? 'RESTAURAR_DEMO' : 'CERRAR';
+}

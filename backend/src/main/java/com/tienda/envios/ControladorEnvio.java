@@ -51,21 +51,105 @@ public class ControladorEnvio {
 
         var despachosActivos = jdbc.queryForList("""
             SELECT e.*, p.moneda, p.total, p.estado AS estado_pedido, p.peso_tasable,
-                   d.pais AS pais_destino, d.ciudad, c.nombres || ' ' || c.apellidos AS nombre_cliente
+                   p.peso_fisico_total, p.peso_volumetrico_total, p.tipo_venta, p.idioma_operacion,
+                   d.pais AS pais_destino, pp.nombre AS nombre_pais, d.ciudad, d.linea_direccion, d.codigo_postal,
+                   c.nombres || ' ' || c.apellidos AS nombre_cliente, c.datos_fiscales
             FROM envio e
             JOIN pedido p ON p.id_pedido = e.id_pedido
             JOIN direccion d ON d.id_direccion = p.id_direccion
+            JOIN param_pais pp ON pp.codigo_pais = d.pais
             JOIN cliente c ON c.id_cliente = p.id_cliente
             ORDER BY e.id_envio DESC
         """);
 
+        List<Map<String, Object>> despachosEnriquecidos = new ArrayList<>();
+        for (Map<String, Object> d : despachosActivos) {
+            Map<String, Object> copia = new LinkedHashMap<>(d);
+            int idPed = ((Number) d.get("id_pedido")).intValue();
+            copia.put("detalles", jdbc.queryForList("""
+                SELECT dp.cantidad, dp.precio_unitario, pr.codigo, pr.codigo_arancelario, pr.peso_kg, pr.dimensiones,
+                       COALESCE(tp.nombre, pr.codigo) AS nombre_producto
+                FROM detalle_pedido dp
+                JOIN producto pr ON pr.id_producto = dp.id_producto
+                LEFT JOIN traduccion_producto tp ON tp.id_producto = pr.id_producto AND tp.idioma = 'ES'
+                WHERE dp.id_pedido = ?
+            """, idPed));
+            despachosEnriquecidos.add(copia);
+        }
+
         return Map.of(
                 "pendientesGuia", listosParaGuia,
-                "despachos", despachosActivos
+                "despachos", despachosEnriquecidos
         );
     }
 
-    public record EmitirGuiaReq(int idPedido, String operador) {}
+    /**
+     * CU08 / RF15: Seguimiento logístico público o autenticado por número de guía internacional
+     * (también acepta búsqueda por #ID de pedido para comodidad del cliente).
+     */
+    @GetMapping("/api/envios/seguimiento/{codigo}")
+    public ResponseEntity<?> consultarSeguimientoLogistico(@PathVariable String codigo) {
+        String limpio = codigo != null ? codigo.trim() : "";
+        if (limpio.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("mensaje", "Debe ingresar un número de guía internacional."));
+        }
+
+        List<Map<String, Object>> envios = jdbc.queryForList("""
+            SELECT e.*, p.estado AS estado_pedido, p.fecha AS fecha_pedido, p.moneda, p.total,
+                   p.peso_tasable, p.tipo_venta, p.idioma_operacion,
+                   d.pais AS pais_destino, pp.nombre AS nombre_pais, d.ciudad, d.codigo_postal,
+                   c.nombres || ' ' || c.apellidos AS nombre_cliente
+            FROM envio e
+            JOIN pedido p ON p.id_pedido = e.id_pedido
+            JOIN direccion d ON d.id_direccion = p.id_direccion
+            JOIN param_pais pp ON pp.codigo_pais = d.pais
+            JOIN cliente c ON c.id_cliente = p.id_cliente
+            WHERE UPPER(e.numero_guia) = UPPER(?)
+        """, limpio);
+
+        if (envios.isEmpty() && limpio.replace("#", "").matches("\\d+")) {
+            int idPed = Integer.parseInt(limpio.replace("#", ""));
+            envios = jdbc.queryForList("""
+                SELECT e.*, p.estado AS estado_pedido, p.fecha AS fecha_pedido, p.moneda, p.total,
+                       p.peso_tasable, p.tipo_venta, p.idioma_operacion,
+                       d.pais AS pais_destino, pp.nombre AS nombre_pais, d.ciudad, d.codigo_postal,
+                       c.nombres || ' ' || c.apellidos AS nombre_cliente
+                FROM envio e
+                JOIN pedido p ON p.id_pedido = e.id_pedido
+                JOIN direccion d ON d.id_direccion = p.id_direccion
+                JOIN param_pais pp ON pp.codigo_pais = d.pais
+                JOIN cliente c ON c.id_cliente = p.id_cliente
+                WHERE e.id_pedido = ?
+            """, idPed);
+        }
+
+        if (envios.isEmpty()) {
+            return ResponseEntity.status(404).body(Map.of(
+                    "mensaje", "CU08: No se encontró ningún envío internacional asociado a la guía '" + limpio + "'."));
+        }
+
+        Map<String, Object> env = new LinkedHashMap<>(envios.get(0));
+        int idPedido = ((Number) env.get("id_pedido")).intValue();
+        List<Map<String, String>> eventos;
+        try {
+            eventos = mapper.readValue((String) env.get("eventos_tracking"), new TypeReference<>() {});
+        } catch (Exception e) {
+            eventos = List.of();
+        }
+        env.put("eventos", eventos);
+        env.put("detalles", jdbc.queryForList("""
+            SELECT dp.cantidad, pr.codigo, pr.codigo_arancelario, pr.peso_kg,
+                   COALESCE(tp.nombre, pr.codigo) AS nombre_producto
+            FROM detalle_pedido dp
+            JOIN producto pr ON pr.id_producto = dp.id_producto
+            LEFT JOIN traduccion_producto tp ON tp.id_producto = pr.id_producto AND tp.idioma = ?
+            WHERE dp.id_pedido = ?
+        """, env.get("idioma_operacion"), idPedido));
+
+        return ResponseEntity.ok(env);
+    }
+
+    public record EmitirGuiaReq(int idPedido, String operador, Boolean despacharInmediato) {}
 
     @PostMapping("/api/envios/gestion/emitir-guia")
     @Transactional
@@ -115,43 +199,56 @@ public class ControladorEnvio {
 
         String pais = (String) ped.get("pais_destino");
         var despacho = adaptadores.emitirGuiaExportacion(req.idPedido(), pais, req.operador());
+        boolean inmediato = req.despacharInmediato() == null || req.despacharInmediato();
 
         String ahora = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"));
+        List<Map<String, String>> eventosIniciales = new ArrayList<>();
+        eventosIniciales.add(Map.of("fecha", ahora, "estado", "PENDIENTE",
+                "detalle", "Documentación aduanera (CN23/HS) validada y etiqueta " + despacho.etiquetaExportacion() + " emitida en almacén"));
+        if (inmediato) {
+            eventosIniciales.add(Map.of("fecha", ahora, "estado", "EN_TRANSITO",
+                    "detalle", "Despacho internacional recolectado por " + despacho.operador() + " rumbo a " + pais));
+        }
+
         String eventosJson;
         try {
-            eventosJson = mapper.writeValueAsString(List.of(
-                    Map.of("fecha", ahora, "estado", "PENDIENTE", "detalle", "Documentación aduanera validada y etiqueta " + despacho.etiquetaExportacion() + " emitida"),
-                    Map.of("fecha", ahora, "estado", "EN_TRANSITO", "detalle", "Despacho internacional recolectado por " + despacho.operador() + " rumbo a " + pais)
-            ));
+            eventosJson = mapper.writeValueAsString(eventosIniciales);
         } catch (Exception e) {
             eventosJson = "[]";
         }
 
+        String estadoEnvioInicial = inmediato ? "EN_TRANSITO" : "PENDIENTE";
+        String estadoPedidoInicial = inmediato ? "ENVIADO" : "PREPARADO";
+
         jdbc.update("""
             INSERT INTO envio (id_pedido, operador, numero_guia, etiqueta_exportacion, costo, fecha_estimada, estado, eventos_tracking)
-            VALUES (?, ?, ?, ?, ?, ?, 'EN_TRANSITO', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, req.idPedido(), despacho.operador(), despacho.numeroGuia(), despacho.etiquetaExportacion(),
-                ped.get("costo_envio"), java.sql.Date.valueOf(despacho.fechaEstimada()), eventosJson);
+                ped.get("costo_envio"), java.sql.Date.valueOf(despacho.fechaEstimada()), estadoEnvioInicial, eventosJson);
 
-        jdbc.update("UPDATE pedido SET estado = 'ENVIADO' WHERE id_pedido = ?", req.idPedido());
+        jdbc.update("UPDATE pedido SET estado = ? WHERE id_pedido = ?", estadoPedidoInicial, req.idPedido());
 
         adaptadores.notificarClienteEnSuIdioma(
                 ((Number) ped.get("id_cliente")).intValue(),
                 req.idPedido(),
-                "GUIA_ENVIO_EMITIDA",
+                inmediato ? "GUIA_ENVIO_EMITIDA" : "PEDIDO_PREPARADO_ALMACEN",
                 despacho.operador() + " - Guía " + despacho.numeroGuia()
         );
 
         auditoria.registrar(sesion.idSujeto(), sesion.identificador(), "EMISION_GUIA_INTERNACIONAL",
                 "ENVIO", req.idPedido(), "EXITOSO",
-                "Guía única " + despacho.numeroGuia() + " generada con " + despacho.operador());
+                "Guía única " + despacho.numeroGuia() + " generada con " + despacho.operador() + " (estado=" + estadoEnvioInicial + ")");
 
         return ResponseEntity.ok(Map.of(
                 "numeroGuia", despacho.numeroGuia(),
                 "operador", despacho.operador(),
                 "etiquetaExportacion", despacho.etiquetaExportacion(),
                 "fechaEstimada", despacho.fechaEstimada().toString(),
-                "mensaje", "Guía internacional " + despacho.numeroGuia() + " generada y pedido despachado en tránsito."
+                "estadoEnvio", estadoEnvioInicial,
+                "estadoPedido", estadoPedidoInicial,
+                "mensaje", inmediato
+                        ? "Guía internacional " + despacho.numeroGuia() + " generada y pedido despachado en tránsito."
+                        : "Pedido marcado como PREPARADO con guía " + despacho.numeroGuia() + " lista para recolección del operador."
         ));
     }
 
@@ -202,13 +299,21 @@ public class ControladorEnvio {
         jdbc.update("UPDATE envio SET estado = ?, eventos_tracking = ? WHERE id_envio = ?", destino, nuevoJson, idEnvio);
 
         int idPedido = ((Number) env.get("id_pedido")).intValue();
-        if ("ENTREGADO".equals(destino)) {
+        int idCliente = ((Number) env.get("id_cliente")).intValue();
+        if ("EN_TRANSITO".equals(destino) && "PENDIENTE".equals(estadoActual)) {
+            jdbc.update("UPDATE pedido SET estado = 'ENVIADO' WHERE id_pedido = ?", idPedido);
+            adaptadores.notificarClienteEnSuIdioma(idCliente, idPedido,
+                    "GUIA_ENVIO_EMITIDA", "Paquete recolectado en tránsito internacional - Guía " + env.get("numero_guia"));
+        } else if ("EN_ADUANA".equals(destino)) {
+            adaptadores.notificarClienteEnSuIdioma(idCliente, idPedido,
+                    "ENVIO_EN_ADUANA", "Guía " + env.get("numero_guia") + " en inspección aduanera de destino");
+        } else if ("ENTREGADO".equals(destino)) {
             jdbc.update("UPDATE pedido SET estado = 'ENTREGADO' WHERE id_pedido = ?", idPedido);
-            adaptadores.notificarClienteEnSuIdioma(((Number) env.get("id_cliente")).intValue(), idPedido,
+            adaptadores.notificarClienteEnSuIdioma(idCliente, idPedido,
                     "PEDIDO_ENTREGADO", "Entrega final confirmada para guía " + env.get("numero_guia"));
         } else if ("DEVUELTO".equals(destino)) {
             jdbc.update("UPDATE pedido SET estado = 'DEVUELTO' WHERE id_pedido = ?", idPedido);
-            adaptadores.notificarClienteEnSuIdioma(((Number) env.get("id_cliente")).intValue(), idPedido,
+            adaptadores.notificarClienteEnSuIdioma(idCliente, idPedido,
                     "INCIDENCIA_ADUANA_DEVUELTO", "Paquete retornado desde aduana de destino");
         }
 

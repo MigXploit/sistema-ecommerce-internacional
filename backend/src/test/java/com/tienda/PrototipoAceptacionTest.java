@@ -207,4 +207,61 @@ class PrototipoAceptacionTest {
                         .header("Authorization", "Bearer " + tokenCat))
                 .andExpect(status().isOk());
     }
+
+    @Test
+    void seguimientoLogisticoPublicoYEndpointsCompletosAl100() throws Exception {
+        // 1. Seguimiento logístico público por número de guía (CU08 / RF15)
+        mvc.perform(get("/api/envios/seguimiento/CG-2026-000731"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.numero_guia").value("CG-2026-000731"))
+                .andExpect(jsonPath("$.eventos").isArray())
+                .andExpect(jsonPath("$.detalles").isArray());
+
+        mvc.perform(get("/api/envios/seguimiento/GUIA-INEXISTENTE-999"))
+                .andExpect(status().isNotFound());
+
+        // 2. Filtro de rango de precio (precioMin y precioMax - RF04)
+        mvc.perform(get("/api/catalogo?idioma=ES&moneda=USD&precioMin=50&precioMax=200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray());
+
+        // 3. Perfil de cliente (RF05)
+        String tokenCliente = login("diego.rojas@comercio.bo", "Cliente2026!", "CLIENTE");
+        mvc.perform(get("/api/clientes/perfil")
+                        .header("Authorization", "Bearer " + tokenCliente))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pais").value("BO"));
+
+        // 4. Contingencia de tipo de cambio RN03 (simularFallaProveedor=true)
+        String tokenCat = login("catalogo", "Catalogo2026!", "INTERNO");
+        mvc.perform(post("/api/catalogo/sincronizar-tasas?simularFallaProveedor=true")
+                        .header("Authorization", "Bearer " + tokenCat))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.alertaFallbackRn03").value(true));
+
+        // 5. Reporte multidimensional con rango de fechas (CU12)
+        String tokenGerente = login("gerencia", "Gerencia2026!", "INTERNO");
+        mvc.perform(get("/api/reportes/multidimensional?pais=TODOS&fechaDesde=2025-01-01&fechaHasta=2027-12-31")
+                        .header("Authorization", "Bearer " + tokenGerente))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.cantidadRegistros").isNumber());
+
+        // 6. Parámetros operativos completos: aranceles HS, operadores e idiomas (CU13 / RNF09)
+        String tokenAdmin = login("admin.parametros", "AdminParam2026!", "INTERNO");
+        mvc.perform(get("/api/parametros/aranceles")
+                        .header("Authorization", "Bearer " + tokenAdmin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$").isArray());
+
+        mvc.perform(post("/api/parametros/aranceles")
+                        .header("Authorization", "Bearer " + tokenAdmin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(mapper.writeValueAsString(Map.of(
+                                "codigoPais", "BR",
+                                "codigoArancelario", "6201.99",
+                                "tasaArancel", 0.14,
+                                "restringido", false
+                        ))))
+                .andExpect(status().isOk());
+    }
 }

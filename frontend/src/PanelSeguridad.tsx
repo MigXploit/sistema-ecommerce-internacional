@@ -1,4 +1,15 @@
 import React, { useEffect, useState } from 'react';
+import {
+  ChevronRight,
+  FlaskConical,
+  KeyRound,
+  Pencil,
+  RefreshCw,
+  ScrollText,
+  ShieldCheck,
+  Users,
+  X
+} from 'lucide-react';
 import { apiFetch, UsuarioSesion } from './api';
 import { OperationalTable } from './components/OperationalTable';
 import { ImmutableTag, StatusBadge } from './components/StatusBadge';
@@ -36,6 +47,7 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
     clave: '',
     rol: 'LOGISTICA'
   });
+  const [editUsrModal, setEditUsrModal] = useState<{ idUsuario: number; login: string; nombre: string; rol: string; nuevaClave: string } | null>(null);
 
   const cargarSeguridad = async () => {
     try {
@@ -70,6 +82,30 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
         titulo: 'Conflicto en Registro de Cuenta (CU14 2a)',
         mensaje: err.message,
         codigoRef: nuevoUsr.login
+      });
+    }
+  };
+
+  const guardarEdicionUsuario = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editUsrModal) return;
+    try {
+      const payload: any = { rol: editUsrModal.rol };
+      if (editUsrModal.nuevaClave.trim().length > 0) {
+        payload.nuevaClave = editUsrModal.nuevaClave.trim();
+      }
+      const resp = await apiFetch(`/api/seguridad/usuarios/${editUsrModal.idUsuario}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload)
+      }, token);
+      toastExito(resp.mensaje, `@${editUsrModal.login} • ${editUsrModal.rol}`);
+      setEditUsrModal(null);
+      cargarSeguridad();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({
+        titulo: 'Error en Rotación de Rol/Clave (CU14)',
+        mensaje: err.message,
+        codigoRef: editUsrModal.login
       });
     }
   };
@@ -135,7 +171,7 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '20px' }}>🛡️</span>
+              <ShieldCheck size={22} color="#FBBF24" />
               <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 800 }}>
                 Consola Autónoma del Oficial de Seguridad (CU14 / RN20)
               </h2>
@@ -145,7 +181,7 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
             </div>
           </div>
           <button className="btn btn-sm btn-amber" onClick={cargarSeguridad}>
-            ↻ Refrescar Bitácora
+            <RefreshCw size={14} /> Refrescar Bitácora
           </button>
         </div>
       </div>
@@ -168,22 +204,22 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
             className={`sidebar-nav-btn ${seccion === 'AUDITORIA' ? 'active' : ''}`}
             onClick={() => setSeccion('AUDITORIA')}
           >
-            <span>📜 Auditoría Inmutable</span>
-            <span>›</span>
+            <span className="icon-inline"><ScrollText size={16} /> Auditoría Inmutable</span>
+            <ChevronRight size={15} />
           </button>
           <button
             className={`sidebar-nav-btn ${seccion === 'DIRECTORIO' ? 'active' : ''}`}
             onClick={() => setSeccion('DIRECTORIO')}
           >
-            <span>👥 Directorio RBAC y Hashes</span>
-            <span>›</span>
+            <span className="icon-inline"><Users size={16} /> Directorio RBAC y Hashes</span>
+            <ChevronRight size={15} />
           </button>
           <button
             className={`sidebar-nav-btn ${seccion === 'ALTA_BCRYPT' ? 'active' : ''}`}
             onClick={() => setSeccion('ALTA_BCRYPT')}
           >
-            <span>🔐 Alta Cuenta Bcrypt-12</span>
-            <span>›</span>
+            <span className="icon-inline"><KeyRound size={16} /> Alta Cuenta Bcrypt-12</span>
+            <ChevronRight size={15} />
           </button>
         </aside>
 
@@ -195,7 +231,7 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
               subtitulo="Registros protegidos a nivel de aplicación y mediante trigger de base de datos PostgreSQL contra UPDATE o DELETE."
               accionesCabecera={
                 <button className="btn btn-audit-probe" onClick={simularIntentoAlteracionAuditoriaRn17}>
-                  🧪 Simular intento de alteración (Prueba de auditoría RN17)
+                  <FlaskConical size={14} /> Simular intento de alteración (Prueba de auditoría RN17)
                 </button>
               }
               filtrosSlot={
@@ -244,7 +280,7 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
               subtitulo="RN18: Las cuentas con historial no admiten borrado físico; únicamente desactivación lógica preservando su trazabilidad."
               accionesCabecera={
                 <button className="btn btn-audit-probe" onClick={simularIntentoBorradoUsuarioRn18}>
-                  🧪 Simular intento de alteración / borrado físico (Prueba RN18)
+                  <FlaskConical size={14} /> Simular intento de alteración / borrado físico (Prueba RN18)
                 </button>
               }
               columnas={[
@@ -274,14 +310,22 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
                 },
                 {
                   key: 'control',
-                  titulo: 'Control de Acceso (RN18)',
+                  titulo: 'Control de Acceso (RN18 / CU14)',
                   render: (u) => (
-                    <button
-                      className={`btn btn-sm ${u.activo ? 'btn-outline' : 'btn-accent'}`}
-                      onClick={() => cambiarEstado(u, !u.activo)}
-                    >
-                      {u.activo ? 'Desactivar Cuenta (RN18)' : 'Reactivar / Desbloquear'}
-                    </button>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={() => setEditUsrModal({ idUsuario: u.id_usuario, login: u.login, nombre: u.nombre_completo, rol: u.rol, nuevaClave: '' })}
+                      >
+                        <Pencil size={14} /> Rol / Clave
+                      </button>
+                      <button
+                        className={`btn btn-sm ${u.activo ? 'btn-outline' : 'btn-accent'}`}
+                        onClick={() => cambiarEstado(u, !u.activo)}
+                      >
+                        {u.activo ? 'Desactivar (RN18)' : 'Reactivar'}
+                      </button>
+                    </div>
                   )
                 }
               ]}
@@ -336,7 +380,7 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
                 </div>
                 <div>
                   <button type="submit" className="btn btn-amber">
-                    🔐 Generar Hash Bcrypt (Costo 12) y Registrar Usuario
+                    <KeyRound size={16} /> Generar Hash Bcrypt (Costo 12) y Registrar Usuario
                   </button>
                 </div>
               </form>
@@ -344,6 +388,50 @@ export const PanelSeguridad: React.FC<Props> = ({ token, usuario, notificar }) =
           )}
         </div>
       </div>
+
+      {/* MODAL DE EDICIÓN DE ROL RBAC Y ROTACIÓN DE CLAVE BCRYPT-12 (CU14) */}
+      {editUsrModal && (
+        <div className="modal-backdrop">
+          <div className="modal-box" style={{ maxWidth: '480px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 className="section-subtitle icon-inline" style={{ margin: 0 }}>
+                <KeyRound size={17} /> Editar Rol / Rotar Clave — @{editUsrModal.login}
+              </h3>
+              <button className="btn btn-sm btn-outline" onClick={() => setEditUsrModal(null)} aria-label="Cerrar">
+                <X size={15} />
+              </button>
+            </div>
+            <form onSubmit={guardarEdicionUsuario} style={{ display: 'grid', gap: '12px' }}>
+              <div>
+                <label>Funcionario</label>
+                <div style={{ fontWeight: 600 }}>{editUsrModal.nombre}</div>
+              </div>
+              <div>
+                <label>Rol RBAC Asignado (CU14 paso 2)</label>
+                <select value={editUsrModal.rol} onChange={(e) => setEditUsrModal({ ...editUsrModal, rol: e.target.value })}>
+                  {ROLES_RBAC.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>Nueva Contraseña Opcional (Hasheo bcrypt costo 12 con nuevo salt)</label>
+                <input
+                  type="password"
+                  minLength={6}
+                  placeholder="Dejar vacío para conservar la clave actual"
+                  value={editUsrModal.nuevaClave}
+                  onChange={(e) => setEditUsrModal({ ...editUsrModal, nuevaClave: e.target.value })}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => setEditUsrModal(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-amber">Aplicar y Auditar (CU14)</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

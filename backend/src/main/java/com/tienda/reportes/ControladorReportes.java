@@ -87,7 +87,9 @@ public class ControladorReportes {
             @RequestParam(defaultValue = "TODOS") String pais,
             @RequestParam(defaultValue = "TODOS") String tipoVenta,
             @RequestParam(defaultValue = "TODOS") String idioma,
-            @RequestParam(defaultValue = "TODOS") String moneda
+            @RequestParam(defaultValue = "TODOS") String moneda,
+            @RequestParam(required = false) String fechaDesde,
+            @RequestParam(required = false) String fechaHasta
     ) {
         StringBuilder sql = new StringBuilder("""
             SELECT p.id_pedido, p.fecha, d.pais, pp.nombre AS nombre_pais,
@@ -124,6 +126,14 @@ public class ControladorReportes {
             sql.append(" AND p.moneda = ?");
             params.add(moneda.toUpperCase());
         }
+        if (fechaDesde != null && !fechaDesde.isBlank()) {
+            sql.append(" AND CAST(p.fecha AS DATE) >= ?");
+            params.add(java.sql.Date.valueOf(fechaDesde.trim()));
+        }
+        if (fechaHasta != null && !fechaHasta.isBlank()) {
+            sql.append(" AND CAST(p.fecha AS DATE) <= ?");
+            params.add(java.sql.Date.valueOf(fechaHasta.trim()));
+        }
         sql.append(" ORDER BY p.id_pedido DESC");
 
         List<Map<String, Object>> filas = jdbc.queryForList(sql.toString(), params.toArray());
@@ -131,8 +141,16 @@ public class ControladorReportes {
                 .map(r -> (BigDecimal) r.get("equivalente_usd"))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+        Map<String, Object> filtros = new LinkedHashMap<>();
+        filtros.put("pais", pais);
+        filtros.put("tipoVenta", tipoVenta);
+        filtros.put("idioma", idioma);
+        filtros.put("moneda", moneda);
+        filtros.put("fechaDesde", fechaDesde != null ? fechaDesde : "");
+        filtros.put("fechaHasta", fechaHasta != null ? fechaHasta : "");
+
         return Map.of(
-                "filtrosAplicados", Map.of("pais", pais, "tipoVenta", tipoVenta, "idioma", idioma, "moneda", moneda),
+                "filtrosAplicados", filtros,
                 "cantidadRegistros", filas.size(),
                 "totalConsolidadoUsd", sumaUsd,
                 "registros", filas

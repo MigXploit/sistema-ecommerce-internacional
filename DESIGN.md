@@ -39,19 +39,22 @@ Plataforma web SPA (React + TypeScript) con soporte **Multilenguaje (`ES`, `EN`,
 
 ## 3. Reglas de Diseño por Módulo
 
-### A. Barra Superior Global (Header)
-- Mantener **Selector de Idioma (`ES | EN | PT`)** y **Selector de Moneda (`USD | BRL | BOB | EUR`)** siempre visibles en la esquina superior derecha.
-- Al cambiar moneda o idioma, actualizar instantáneamente precios y etiquetas sin recargar la página ni perder el carrito (`CU03`).
-- Mostrar indicador discreto de vigencia de tipo de cambio (`RN02`, `RN03`).
+### A. Header Estilo Marketplace (3 Niveles Limpios)
+1. **Top Bar fina (`#0F172A`, `32px` de alto):** Indicador de tasa de cambio vigente (`1 USD = ...`, `RN02/RN03`), aviso de transparencia arancelaria (`RN07`), selector de Idioma (`ES | EN | PT`) y Moneda (`USD | BRL | BOB | EUR`).
+2. **Header Principal (`#FFFFFF`, borde inferior `#E2E8F0`, *sticky*):** Logo `AndesGlobal Trade` a la izquierda, barra de búsqueda central redondeada con selector de categoría integrado y botón de lupa `#0F4C81`, y a la derecha acciones limpias de **Cuenta / Pedidos**, **Rastrear Envío (`CU08`)** y **Carrito con contador animado**.
+3. **Barra de Categorías horizontal rápida** debajo del header para filtrado en 1 clic sin recargar la página ni perder el carrito (`CU03`).
+- En modo **Consola Autónoma de Seguridad (`OFICIAL_SEGURIDAD`)**, el header mantiene identidad pizarra oscuro `#0F172A` con acento ámbar `#D97706`.
 
-### B. Portal Tienda y Catálogo (`CU01`, `CU03`)
-- **Tarjetas de Producto:** Imagen en proporción `4:3` con estado de carga *skeleton*, categoría, nombre traducido, precio destacado en la moneda activa (con referencia opcional en `USD`), indicador de stock real (`RN01`) y botón claro de *«Añadir al carrito»*.
-- **Filtros:** Barra lateral o superior colapsable por categoría, rango de precio en la moneda seleccionada y buscador instantáneo.
+### B. Portada Hero y Catálogo en 4 Columnas (`CU01`, `CU03`)
+- **Banner Hero compacto:** Encabezado comercial moderno con degradado `#0F4C81 → #1E3A8A`, llamada a la acción y 3 tarjetas de beneficios (*Envío global*, *Impuestos claros RN07*, *Devolución garantizada RN19*).
+- **Grilla de 4 columnas en escritorio:** Catálogo limpio a ancho completo (sin panel lateral fijo) con tarjetas `ProductCard` en proporción `4:3`, estado de carga *skeleton*, micro-animación `translateY(-4px)` al pasar el cursor, precio en `JetBrains Mono`, stock vendible real (`RN01`) y botón verde `#059669`.
+- **Filtros:** Búsqueda central + barra de categorías + filtro de rango de precio (`mín / máx`) en la moneda activa.
 
-### C. Checkout en 4 Pasos (`RNF12` y `RN07`)
+### C. Checkout en 4 Pasos dentro de Drawer Deslizable (`RNF12` y `RN07`)
+- El componente `CheckoutStepper` se presenta como un **Drawer lateral deslizable** desde la derecha (con *backdrop* difuminado y transición `cubic-bezier(0.16, 1, 0.3, 1)`), que se abre al pulsar el ícono del carrito en el header o al añadir un producto.
 1. **Paso 1 — Carrito:** Edición rápida de cantidades (`- / +`), validación de stock máximo (`RN06`) y detección automática de tipo de venta (`MINORISTA`, `MAYORISTA`, `PROMOCIONAL`).
 2. **Paso 2 — Dirección Internacional:** Formulario adaptado al país destino (código postal, datos fiscales) y validación de países/productos restringidos (`RN12`).
-3. **Paso 3 — Cotización y Desglose Obligatorio (`RN07`):** Resumen lateral fijo (*sticky*) que muestra obligatoriamente:
+3. **Paso 3 — Cotización y Desglose Obligatorio (`RN07`):** Muestra obligatoriamente:
    - Subtotal de productos
    - Impuestos / Aranceles estimados por país y código HS
    - Costo de envío (indicando peso tasable físico/volumétrico)
@@ -59,13 +62,21 @@ Plataforma web SPA (React + TypeScript) con soporte **Multilenguaje (`ES`, `EN`,
 4. **Paso 4 — Pago Seguro (`RN11`):** Interfaz limpia con insignia PCI DSS, selector de método de pago y confirmación inmediata con acceso a factura y seguimiento.
 
 ### D. Postventa, Seguimiento y Devoluciones (`CU08`, `CU11`)
-- **Seguimiento de Envío:** Línea de tiempo visual horizontal/vertical con estados: `PENDIENTE` → `EN_TRANSITO` → `EN_ADUANA` → `ENTREGADO` (o `DEVUELTO`) mostrando número de guía y operador.
+- **Seguimiento de Envío:** Vista dedicada *Rastrear Envío* (`GET /api/envios/seguimiento/{codigo}`) y línea de tiempo visual horizontal/vertical con estados: `PENDIENTE` → `EN_TRANSITO` → `EN_ADUANA` → `ENTREGADO` (o `DEVUELTO`) mostrando número de guía y operador.
 - **Devolución por Producto Defectuoso (`RN19`):** Modal guiado que exige seleccionar ítems, causal (`PRODUCTO_DEFECTUOSO`), descripción y carga obligatoria de evidencia fotográfica antes de habilitar el envío del reclamo.
 
 ### E. Paneles Operativos y Consola de Seguridad (`RBAC`)
-- **Layout Administrativo:** Barra lateral izquierda fija con navegación estricta según el rol autenticado (`GESTOR_CATALOGO`, `GESTOR_PEDIDOS`, `LOGISTICA`, `FACTURACION`, `ADMINISTRADOR`, `GERENTE`).
-- **Tablas Operativas:** Encabezados fijos, filtros combinables en la parte superior (especialmente en Reportes `CU12`: País, Tipo de Venta, Idioma, Moneda, Fechas), paginación clara y acciones rápidas en 1 clic (ej. *«Emitir Guía Internacional»* en `CU07`).
-- **Inmutabilidad Visual (`RN16`, `RN17`):** En Facturas emitidas y registros de Auditoría, mostrar un candado o etiqueta `INMUTABLE / SOLO LECTURA` y ocultar botones de edición o borrado.
+- **Layout Administrativo:** Barra lateral izquierda fija con navegación estricta según el rol autenticado (`GESTOR_CATALOGO`, `GESTOR_PEDIDOS`, `LOGISTICA`, `FACTURACION`, `ADMINISTRADOR`, `GERENTE`), colapsable en horizontal en `< 768px` (`RNF13`).
+- **Tablas Operativas:** Encabezados fijos, filtros combinables en la parte superior (Reportes `CU12`: País, Tipo de Venta, Idioma, Moneda, Fechas), paginación clara y acciones rápidas en 1 clic (`CU07`).
+- **Inmutabilidad Visual (`RN16`, `RN17`):** En Facturas emitidas y registros de Auditoría, mostrar etiqueta `🔒 INMUTABLE / SOLO LECTURA` y ocultar botones de edición o borrado en filas.
+
+### F. Pantalla Dedicada de Autenticación Dividida (`AuthPage.tsx`)
+- Elimina la barra permanente de actores en la portada pública y presenta una vista limpia dividida en **2 columnas (50% / 50%)**:
+  - **Izquierda (Marca y Confianza):** Degradado `#0F4C81 → #1E3A8A`, insignias de confianza (`PCI DSS`, `Cálculo Aduanero RN07`, `Multimoneda 24h`) y tarjeta estilizada de operación internacional.
+  - **Derecha (Formulario y Demo):** Selector tipo píldora (`Cliente Internacional | Personal Interno / Seguridad`), pestañas `Iniciar Sesión` / `Crear Cuenta` (`CU02`), y acordeón colapsable *«Acceso Rápido de Demostración (INF-241)»* para los 4 clientes y 7 roles internos.
+
+### G. Micro-animaciones y Transiciones Fluidas
+- Curva estándar: `cubic-bezier(0.16, 1, 0.3, 1)` aplicada a elevación de tarjetas (`translateY(-4px)`), apertura del Drawer de Checkout, transición de vistas/pestañas, contador animado del carrito y *skeletons* de carga.
 
 ---
 

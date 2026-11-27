@@ -1,7 +1,32 @@
 import React, { useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  ChevronRight,
+  ClipboardList,
+  Coins,
+  Download,
+  FileText,
+  FlaskConical,
+  Globe,
+  Landmark,
+  Package,
+  Pencil,
+  Plane,
+  Plus,
+  Printer,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  TrendingUp,
+  Truck,
+  X
+} from 'lucide-react';
 import { apiFetch, UsuarioSesion } from './api';
 import { OperationalTable } from './components/OperationalTable';
 import { ImmutableTag, StatusBadge } from './components/StatusBadge';
+import { DocumentoImprimibleModal } from './components/DocumentoImprimibleModal';
 import {
   modalBloqueoSeguridadInmutabilidad,
   modalConfirmarAprobacionReembolso,
@@ -19,28 +44,32 @@ interface Props {
   notificar: (tipo: 'ok' | 'err', msg: string) => void;
 }
 
-const SECCIONES_POR_ROL: Record<string, { id: string; label: string }[]> = {
+const SECCIONES_POR_ROL: Record<string, { id: string; label: string; icon: React.ReactNode }[]> = {
   GESTOR_CATALOGO: [
-    { id: 'INVENTARIO', label: '📦 Catálogo y Stock' },
-    { id: 'ALTA_PRODUCTO', label: '➕ Nuevo Producto' }
+    { id: 'INVENTARIO', label: 'Catálogo y Stock', icon: <Package size={16} /> },
+    { id: 'ALTA_PRODUCTO', label: 'Nuevo Producto', icon: <Plus size={16} /> }
   ],
   GESTOR_PEDIDOS: [
-    { id: 'INSPECCION', label: '🔍 Inspección y Reembolsos' }
+    { id: 'INSPECCION', label: 'Inspección y Reembolsos', icon: <Search size={16} /> },
+    { id: 'TODOS_PEDIDOS', label: 'Pedidos e Incidencias', icon: <ClipboardList size={16} /> }
   ],
   LOGISTICA: [
-    { id: 'GUIAS', label: '✈️ Emisión de Guías (CU07)' },
-    { id: 'TRANSITO', label: '🛃 Tránsito y Aduana (CU08)' }
+    { id: 'GUIAS', label: 'Emisión de Guías (CU07)', icon: <Plane size={16} /> },
+    { id: 'TRANSITO', label: 'Tránsito y Aduana (CU08)', icon: <Truck size={16} /> }
   ],
   FACTURACION: [
-    { id: 'COMPROBANTES', label: '🧾 Facturas y Notas de Crédito' }
+    { id: 'COMPROBANTES', label: 'Facturas y Notas de Crédito', icon: <FileText size={16} /> }
   ],
   GERENTE: [
-    { id: 'REPORTE_MULTI', label: '📊 Reporte Multidimensional' },
-    { id: 'DEMANDA', label: '📈 Ranking y Solicitudes' }
+    { id: 'REPORTE_MULTI', label: 'Reporte Multidimensional', icon: <BarChart3 size={16} /> },
+    { id: 'DEMANDA', label: 'Ranking y Solicitudes', icon: <TrendingUp size={16} /> }
   ],
   ADMINISTRADOR: [
-    { id: 'PAISES_IMPUESTOS', label: '🌍 Países, IVA y Aduana' },
-    { id: 'SEGREGACION', label: '🛡️ Verificación RN20' }
+    { id: 'PAISES_IMPUESTOS', label: 'Países, IVA y Aduana', icon: <Globe size={16} /> },
+    { id: 'MONEDAS_TASAS', label: 'Monedas y Tasas', icon: <Coins size={16} /> },
+    { id: 'ARANCELES_HS', label: 'Aranceles HS', icon: <Landmark size={16} /> },
+    { id: 'OPERADORES_IDIOMAS', label: 'Operadores e Idiomas', icon: <Plane size={16} /> },
+    { id: 'SEGREGACION', label: 'Verificación RN20', icon: <ShieldCheck size={16} /> }
   ]
 };
 
@@ -52,16 +81,27 @@ export const PanelOperativo: React.FC<Props> = ({
   notificar
 }) => {
   const rol = usuario.rol;
-  const secciones = SECCIONES_POR_ROL[rol] || [{ id: 'DEFAULT', label: rol }];
+  const secciones = SECCIONES_POR_ROL[rol] || [{ id: 'DEFAULT', label: rol, icon: <Package size={16} /> }];
   const [seccionActiva, setSeccionActiva] = useState<string>(secciones[0].id);
 
   // Estados por módulo operativo
   const [productos, setProductos] = useState<any[]>([]);
+  const [prodEditModal, setProdEditModal] = useState<any | null>(null);
   const [solicitudesDev, setSolicitudesDev] = useState<any[]>([]);
+  const [montosParciales, setMontosParciales] = useState<Record<number, string>>({});
+  const [todosPedidos, setTodosPedidos] = useState<any[]>([]);
   const [bandejaLog, setBandejaLog] = useState<{ pendientesGuia: any[]; despachos: any[] }>({ pendientesGuia: [], despachos: [] });
   const [facturas, setFacturas] = useState<any[]>([]);
+  const [docImprimible, setDocImprimible] = useState<{ tipo: 'COMPROBANTE' | 'ETIQUETA_CN23'; datos: any } | null>(null);
   const [estadisticas, setEstadisticas] = useState<any | null>(null);
   const [reporteMulti, setReporteMulti] = useState<any | null>(null);
+  const [aranceles, setAranceles] = useState<any[]>([]);
+
+  // Formularios paramétricos adicionales (CU13 / RF22 / RNF09)
+  const [nuevaMoneda, setNuevaMoneda] = useState({ codigoMoneda: 'GBP', nombre: 'Libra Esterlina', simbolo: '£', tasaRespectoUsd: '0.79', habilitada: true });
+  const [nuevoArancel, setNuevoArancel] = useState({ codigoPais: 'BR', codigoArancelario: '6110.19', tasaArancel: '0.12', restringido: false });
+  const [nuevoOperador, setNuevoOperador] = useState({ codigoOperador: 'FEDEX_INTL', nombre: 'FedEx International Priority', tarifaBaseUsd: '28.00', diasEstimados: '4', activo: true });
+  const [nuevoIdioma, setNuevoIdioma] = useState({ codigoIdioma: 'FR', nombre: 'Français', habilitado: true });
 
   // Filtros multidimensionales obligatorios (RF20 / CA-FUNC-10 + Rango de fechas DESIGN.md §3.E)
   const [filtros, setFiltros] = useState({
@@ -115,8 +155,12 @@ export const PanelOperativo: React.FC<Props> = ({
         const prods = await apiFetch<any[]>('/api/catalogo?incluirInactivos=true', {}, token);
         setProductos(prods);
       } else if (rol === 'GESTOR_PEDIDOS') {
-        const devs = await apiFetch<any[]>('/api/postventa/gestion/solicitudes', {}, token);
+        const [devs, peds] = await Promise.all([
+          apiFetch<any[]>('/api/postventa/gestion/solicitudes', {}, token),
+          apiFetch<any[]>('/api/pedidos', {}, token)
+        ]);
         setSolicitudesDev(devs);
+        setTodosPedidos(peds);
       } else if (rol === 'LOGISTICA') {
         const band = await apiFetch<any>('/api/envios/gestion/bandeja', {}, token);
         setBandejaLog(band);
@@ -124,12 +168,23 @@ export const PanelOperativo: React.FC<Props> = ({
         const facs = await apiFetch<any[]>('/api/facturacion/gestion', {}, token);
         setFacturas(facs);
       } else if (rol === 'GERENTE') {
+        const qs = new URLSearchParams({
+          pais: filtros.pais,
+          tipoVenta: filtros.tipoVenta,
+          idioma: filtros.idioma,
+          moneda: filtros.moneda,
+          ...(filtros.fechaDesde ? { fechaDesde: filtros.fechaDesde } : {}),
+          ...(filtros.fechaHasta ? { fechaHasta: filtros.fechaHasta } : {})
+        });
         const [est, rep] = await Promise.all([
           apiFetch('/api/reportes/estadisticas', {}, token),
-          apiFetch(`/api/reportes/multidimensional?pais=${filtros.pais}&tipoVenta=${filtros.tipoVenta}&idioma=${filtros.idioma}&moneda=${filtros.moneda}`, {}, token)
+          apiFetch(`/api/reportes/multidimensional?${qs.toString()}`, {}, token)
         ]);
         setEstadisticas(est);
         setReporteMulti(rep);
+      } else if (rol === 'ADMINISTRADOR') {
+        const ar = await apiFetch<any[]>('/api/parametros/aranceles', {}, token);
+        setAranceles(ar);
       }
     } catch (e: any) {
       notificar('err', e.message);
@@ -142,7 +197,9 @@ export const PanelOperativo: React.FC<Props> = ({
         pais: filtros.pais,
         tipoVenta: filtros.tipoVenta,
         idioma: filtros.idioma,
-        moneda: filtros.moneda
+        moneda: filtros.moneda,
+        ...(filtros.fechaDesde ? { fechaDesde: filtros.fechaDesde } : {}),
+        ...(filtros.fechaHasta ? { fechaHasta: filtros.fechaHasta } : {})
       });
       const rep = await apiFetch(`/api/reportes/multidimensional?${qs.toString()}`, {}, token);
       setReporteMulti(rep);
@@ -152,6 +209,88 @@ export const PanelOperativo: React.FC<Props> = ({
       );
     } catch (e: any) {
       notificar('err', e.message);
+    }
+  };
+
+  const exportarReporteCsv = () => {
+    if (!reporteMulti?.registros?.length) return;
+    const headers = ['ID_PEDIDO', 'FECHA', 'CLIENTE', 'PAIS', 'TIPO_VENTA', 'IDIOMA', 'MONEDA', 'TOTAL', 'EQUIV_USD', 'ESTADO', 'FACTURA', 'GUIA'];
+    const rows = reporteMulti.registros.map((r: any) => [
+      r.id_pedido,
+      String(r.fecha || '').substring(0, 19),
+      `"${String(r.cliente || '').replace(/"/g, '""')}"`,
+      r.pais,
+      r.tipo_venta,
+      r.idioma_operacion,
+      r.moneda,
+      r.total,
+      r.equivalente_usd,
+      r.estado,
+      r.numero_factura || '',
+      r.numero_guia || ''
+    ].join(','));
+    const blob = new Blob([[headers.join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `reporte_multidimensional_${filtros.pais}_${filtros.moneda}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toastExito('Reporte CSV exportado correctamente (CU12)', `${reporteMulti.registros.length} filas`);
+  };
+
+  const abrirEdicionProducto = (p: any) => {
+    const tEs = p.traducciones?.find((t: any) => t.idioma === 'ES');
+    const tEn = p.traducciones?.find((t: any) => t.idioma === 'EN');
+    const tPt = p.traducciones?.find((t: any) => t.idioma === 'PT');
+    setProdEditModal({
+      idProducto: p.id_producto,
+      codigo: p.codigo,
+      categoria: p.categoria,
+      pesoKg: String(p.peso_kg),
+      dimensiones: p.dimensiones,
+      codigoArancelario: p.codigo_arancelario,
+      precioBaseUsd: String(p.precio_base_usd),
+      stock: String(p.stock),
+      imagenUrl: p.imagen_url || '',
+      estado: Boolean(p.estado),
+      nombreEs: tEs?.nombre || p.nombre_localizado || '',
+      descEs: tEs?.descripcion || '',
+      nombreEn: tEn?.nombre || '',
+      descEn: tEn?.descripcion || '',
+      nombrePt: tPt?.nombre || '',
+      descPt: tPt?.descripcion || ''
+    });
+  };
+
+  const guardarEdicionProducto = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!prodEditModal) return;
+    try {
+      const resp = await apiFetch(`/api/catalogo/productos/${prodEditModal.idProducto}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          codigo: prodEditModal.codigo,
+          categoria: prodEditModal.categoria,
+          pesoKg: Number(prodEditModal.pesoKg),
+          dimensiones: prodEditModal.dimensiones,
+          codigoArancelario: prodEditModal.codigoArancelario,
+          precioBaseUsd: Number(prodEditModal.precioBaseUsd),
+          stock: Number(prodEditModal.stock),
+          imagenUrl: prodEditModal.imagenUrl,
+          estado: prodEditModal.estado,
+          traducciones: [
+            { idioma: 'ES', nombre: prodEditModal.nombreEs, descripcion: prodEditModal.descEs },
+            { idioma: 'EN', nombre: prodEditModal.nombreEn, descripcion: prodEditModal.descEn },
+            { idioma: 'PT', nombre: prodEditModal.nombrePt, descripcion: prodEditModal.descPt }
+          ]
+        })
+      }, token);
+      toastExito(resp.mensaje, `${prodEditModal.codigo} • $${Number(prodEditModal.precioBaseUsd).toFixed(2)} USD`);
+      setProdEditModal(null);
+      cargarDatosRol();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ mensaje: err.message, codigoRef: 'CU01' });
     }
   };
 
@@ -189,10 +328,18 @@ export const PanelOperativo: React.FC<Props> = ({
     }
   };
 
-  const sincronizarTasas = async () => {
+  const sincronizarTasas = async (simularFalla = false) => {
     try {
-      const resp = await apiFetch('/api/catalogo/sincronizar-tasas', { method: 'POST' }, token);
-      toastExito(resp.mensaje, 'USD / BRL / BOB / EUR');
+      const resp = await apiFetch(`/api/catalogo/sincronizar-tasas?simularFallaProveedor=${simularFalla}`, { method: 'POST' }, token);
+      if (resp.alertaFallbackRn03) {
+        await modalErrorValidacionOAduana({
+          titulo: 'Alerta de Contingencia de Divisas (RN03)',
+          mensaje: resp.mensaje,
+          codigoRef: 'CU01 4a / RN03'
+        });
+      } else {
+        toastExito(resp.mensaje, 'USD / BRL / BOB / EUR');
+      }
       recargarParametros();
       cargarDatosRol();
     } catch (err: any) {
@@ -200,15 +347,15 @@ export const PanelOperativo: React.FC<Props> = ({
     }
   };
 
-  const emitirGuiaUnClic = async (idPedido: number, operador: string) => {
+  const emitirGuiaUnClic = async (idPedido: number, operador: string, despacharInmediato = true) => {
     try {
       const resp = await apiFetch('/api/envios/gestion/emitir-guia', {
         method: 'POST',
-        body: JSON.stringify({ idPedido, operador })
+        body: JSON.stringify({ idPedido, operador, despacharInmediato })
       }, token);
       // Toast rápido 3.5s con número de guía en JetBrains Mono (CU07)
       toastExito(
-        `Guía internacional emitida (${resp.operador})`,
+        despacharInmediato ? `Guía internacional emitida (${resp.operador})` : `Pedido PREPARADO en almacén (${resp.operador})`,
         `${resp.numeroGuia} • Pedido #${idPedido}`
       );
       cargarDatosRol();
@@ -218,6 +365,16 @@ export const PanelOperativo: React.FC<Props> = ({
         mensaje: err.message,
         codigoRef: `Pedido #${idPedido}`
       });
+    }
+  };
+
+  const cancelarPedidoGestor = async (idPedido: number) => {
+    try {
+      const resp = await apiFetch(`/api/pedidos/${idPedido}/cancelar`, { method: 'POST' }, token);
+      toastInfo(resp.mensaje, `Pedido #${idPedido}`);
+      cargarDatosRol();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ mensaje: err.message, codigoRef: 'D08' });
     }
   };
 
@@ -238,13 +395,16 @@ export const PanelOperativo: React.FC<Props> = ({
   };
 
   const resolverDevolucion = async (solicitud: any, aprobar: boolean) => {
+    const montoCustomStr = montosParciales[solicitud.id_reembolso];
+    const montoAprobar = montoCustomStr && Number(montoCustomStr) > 0 ? Number(montoCustomStr) : Number(solicitud.monto);
+
     // Modal con confirmación explícita antes de aprobar/rechazar reembolso y cuarentena (CU06 / RN10 / RN19)
     const confirmado = await modalConfirmarAprobacionReembolso({
       idReembolso: solicitud.id_reembolso,
       idPedido: solicitud.id_pedido,
       sku: solicitud.sku_afectado,
       unidades: solicitud.unidades_defectuosas,
-      monto: solicitud.monto,
+      monto: montoAprobar,
       moneda: solicitud.moneda,
       topeOriginal: solicitud.monto_pago_original,
       aprobar
@@ -256,6 +416,7 @@ export const PanelOperativo: React.FC<Props> = ({
         method: 'POST',
         body: JSON.stringify({
           aprobar,
+          montoAutorizado: aprobar ? montoAprobar : null,
           observacionDictamen: aprobar
             ? 'Defecto físico comprobado en inspección de calidad; mercadería aislada en cuarentena.'
             : 'Reclamo sin defecto comprobable.'
@@ -314,6 +475,66 @@ export const PanelOperativo: React.FC<Props> = ({
     }
   };
 
+  const guardarMonedaParametrica = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const resp = await apiFetch('/api/parametros/monedas', {
+        method: 'POST',
+        body: JSON.stringify({ ...nuevaMoneda, tasaRespectoUsd: Number(nuevaMoneda.tasaRespectoUsd) })
+      }, token);
+      toastExito(resp.mensaje, `${nuevaMoneda.codigoMoneda} = ${nuevaMoneda.tasaRespectoUsd}`);
+      recargarParametros();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ mensaje: err.message, codigoRef: 'CU13' });
+    }
+  };
+
+  const guardarArancelParametrico = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const resp = await apiFetch('/api/parametros/aranceles', {
+        method: 'POST',
+        body: JSON.stringify({ ...nuevoArancel, tasaArancel: Number(nuevoArancel.tasaArancel) })
+      }, token);
+      toastExito(resp.mensaje, `${nuevoArancel.codigoPais} / HS ${nuevoArancel.codigoArancelario}`);
+      cargarDatosRol();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ mensaje: err.message, codigoRef: 'CU13' });
+    }
+  };
+
+  const guardarOperadorParametrico = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const resp = await apiFetch('/api/parametros/operadores', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...nuevoOperador,
+          tarifaBaseUsd: Number(nuevoOperador.tarifaBaseUsd),
+          diasEstimados: Number(nuevoOperador.diasEstimados)
+        })
+      }, token);
+      toastExito(resp.mensaje, nuevoOperador.codigoOperador);
+      recargarParametros();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ mensaje: err.message, codigoRef: 'CU13' });
+    }
+  };
+
+  const guardarIdiomaParametrico = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const resp = await apiFetch('/api/parametros/idiomas', {
+        method: 'POST',
+        body: JSON.stringify(nuevoIdioma)
+      }, token);
+      toastExito(resp.mensaje, nuevoIdioma.codigoIdioma);
+      recargarParametros();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ mensaje: err.message, codigoRef: 'CU13' });
+    }
+  };
+
   const probarViolacionSegregacionRn20 = async () => {
     try {
       await apiFetch('/api/seguridad/usuarios', {}, token);
@@ -347,13 +568,13 @@ export const PanelOperativo: React.FC<Props> = ({
             className={`sidebar-nav-btn ${seccionActiva === sec.id ? 'active' : ''}`}
             onClick={() => setSeccionActiva(sec.id)}
           >
-            <span>{sec.label}</span>
-            <span>›</span>
+            <span className="icon-inline">{sec.icon} {sec.label}</span>
+            <ChevronRight size={15} />
           </button>
         ))}
 
         <button className="btn btn-sm btn-outline" style={{ marginTop: '8px' }} onClick={cargarDatosRol}>
-          ↻ Sincronizar Datos
+          <RefreshCw size={14} /> Sincronizar Datos
         </button>
       </aside>
 
@@ -366,11 +587,14 @@ export const PanelOperativo: React.FC<Props> = ({
             subtitulo="Precios convertidos automáticamente a partir de moneda base (USD) y aislamiento de mercadería dañada."
             accionesCabecera={
               <>
-                <button className="btn btn-sm btn-accent" onClick={sincronizarTasas}>
-                  💱 Sincronizar Tipos de Cambio (RF12)
+                <button className="btn btn-sm btn-accent" onClick={() => sincronizarTasas(false)}>
+                  <Coins size={15} /> Sincronizar Tipos de Cambio (RF12)
+                </button>
+                <button className="btn btn-sm btn-outline" onClick={() => sincronizarTasas(true)}>
+                  <AlertTriangle size={15} /> Simular Falla Proveedor (RN03)
                 </button>
                 <button className="btn btn-sm btn-primary" onClick={() => setSeccionActiva('ALTA_PRODUCTO')}>
-                  + Nuevo Producto
+                  <Plus size={15} /> Nuevo Producto
                 </button>
               </>
             }
@@ -392,7 +616,16 @@ export const PanelOperativo: React.FC<Props> = ({
                     <span className="mono">0</span>
                   )
               },
-              { key: 'estado', titulo: 'Estado', render: (p) => <StatusBadge estado={p.estado ? 'ACTIVO' : 'INACTIVO'} /> }
+              { key: 'estado', titulo: 'Estado', render: (p) => <StatusBadge estado={p.estado ? 'ACTIVO' : 'INACTIVO'} /> },
+              {
+                key: 'editar',
+                titulo: 'Gestión',
+                render: (p) => (
+                  <button className="btn btn-sm btn-outline" onClick={() => abrirEdicionProducto(p)}>
+                    <Pencil size={14} /> Editar
+                  </button>
+                )
+              }
             ]}
             datos={productos}
           />
@@ -425,10 +658,10 @@ export const PanelOperativo: React.FC<Props> = ({
         )}
 
         {/* 2. GESTOR DE PEDIDOS Y POSTVENTA (CU06, CU11) */}
-        {rol === 'GESTOR_PEDIDOS' && (
+        {rol === 'GESTOR_PEDIDOS' && seccionActiva === 'INSPECCION' && (
           <OperationalTable
             titulo="Inspección de Devoluciones por Productos Defectuosos y Control de Reembolsos (CU11 / CU06)"
-            subtitulo="RN10 y RN19: Verifica evidencia obligatoria, aísla unidades dañadas fuera del stock vendible, reembolsa ≤ 100% y dispara Nota de Crédito."
+            subtitulo="RN10 y RN19: Verifica evidencia obligatoria, permite reembolso total o parcial ≤ 100%, aísla unidades dañadas fuera del stock vendible y dispara Nota de Crédito."
             columnas={[
               { key: 'id_reembolso', titulo: 'ID', mono: true, render: (s) => `#${s.id_reembolso}` },
               {
@@ -465,12 +698,23 @@ export const PanelOperativo: React.FC<Props> = ({
               },
               {
                 key: 'monto',
-                titulo: 'Reembolso / Tope',
+                titulo: 'Reembolso / Tope (RN10)',
                 mono: true,
                 render: (s) => (
                   <div>
-                    <strong>{Number(s.monto).toFixed(2)} {s.moneda}</strong>
-                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Máx: {s.monto_pago_original}</div>
+                    {s.estado === 'PENDIENTE' ? (
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="mono"
+                        style={{ width: '95px', padding: '4px 6px', fontSize: '12px' }}
+                        value={montosParciales[s.id_reembolso] ?? String(s.monto)}
+                        onChange={(e) => setMontosParciales({ ...montosParciales, [s.id_reembolso]: e.target.value })}
+                      />
+                    ) : (
+                      <strong>{Number(s.monto).toFixed(2)} {s.moneda}</strong>
+                    )}
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>Máx: {s.monto_pago_original} {s.moneda}</div>
                   </div>
                 )
               },
@@ -497,6 +741,34 @@ export const PanelOperativo: React.FC<Props> = ({
           />
         )}
 
+        {rol === 'GESTOR_PEDIDOS' && seccionActiva === 'TODOS_PEDIDOS' && (
+          <OperationalTable
+            titulo="Control Integral de Pedidos Internacionales y Cancelaciones Pre-Despacho (D08 / RN05)"
+            subtitulo="Permite cancelar pedidos en estado CREADO o PAGADO antes de preparación logística (con reembolso y Nota de Crédito automática)."
+            columnas={[
+              { key: 'id_pedido', titulo: 'Pedido', mono: true, render: (p) => `#${p.id_pedido}` },
+              { key: 'nombre_cliente', titulo: 'Cliente / País', render: (p) => `${p.nombre_cliente} (${p.pais_destino})` },
+              { key: 'tipo_venta', titulo: 'Tipo', render: (p) => <StatusBadge estado="PENDIENTE" texto={p.tipo_venta} /> },
+              { key: 'total', titulo: 'Total Congelado', mono: true, render: (p) => `${Number(p.total).toFixed(2)} ${p.moneda}` },
+              { key: 'estado', titulo: 'Estado', render: (p) => <StatusBadge estado={p.estado} /> },
+              { key: 'guia', titulo: 'Guía Logística', mono: true, render: (p) => p.envio?.numero_guia || 'Sin despacho' },
+              {
+                key: 'accion',
+                titulo: 'Incidencia / Cancelación',
+                render: (p) =>
+                  (p.estado === 'CREADO' || (p.estado === 'PAGADO' && !p.envio)) ? (
+                    <button className="btn btn-sm btn-danger" onClick={() => cancelarPedidoGestor(p.id_pedido)}>
+                      <X size={14} /> Cancelar Pedido
+                    </button>
+                  ) : (
+                    <span className="mono" style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>En curso / Cerrado</span>
+                  )
+              }
+            ]}
+            datos={todosPedidos}
+          />
+        )}
+
         {/* 3. RESPONSABLE DE LOGÍSTICA (CU07, CU08) */}
         {rol === 'LOGISTICA' && seccionActiva === 'GUIAS' && (
           <OperationalTable
@@ -510,14 +782,17 @@ export const PanelOperativo: React.FC<Props> = ({
               { key: 'costo_envio', titulo: 'Flete Pactado', mono: true, render: (p) => `${Number(p.costo_envio).toFixed(2)} ${p.moneda}` },
               {
                 key: 'accion',
-                titulo: 'Emisión Directa en 1 Clic',
+                titulo: 'Emisión de Guía / Preparación (CU07)',
                 render: (p) => (
                   <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                    <button className="btn btn-sm btn-primary" onClick={() => emitirGuiaUnClic(p.id_pedido, 'Courier Global Express')}>
-                      ✈️ Emitir Guía Internacional (Courier Global)
+                    <button className="btn btn-sm btn-outline" onClick={() => emitirGuiaUnClic(p.id_pedido, 'Courier Global Express', false)}>
+                      <Package size={14} /> Preparar (Almacén)
                     </button>
-                    <button className="btn btn-sm btn-accent" onClick={() => emitirGuiaUnClic(p.id_pedido, 'DHL Express International')}>
-                      Emitir Guía DHL
+                    <button className="btn btn-sm btn-primary" onClick={() => emitirGuiaUnClic(p.id_pedido, 'Courier Global Express', true)}>
+                      <Plane size={14} /> Emitir y Despachar (Courier)
+                    </button>
+                    <button className="btn btn-sm btn-accent" onClick={() => emitirGuiaUnClic(p.id_pedido, 'DHL Express International', true)}>
+                      <Plane size={14} /> Emitir Guía DHL
                     </button>
                   </div>
                 )
@@ -552,13 +827,24 @@ export const PanelOperativo: React.FC<Props> = ({
                 titulo: 'Actualizar Hito Aduanero / Entrega',
                 render: (e) => (
                   <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => setDocImprimible({ tipo: 'ETIQUETA_CN23', datos: e })}
+                    >
+                      <Printer size={14} /> Etiqueta CN23
+                    </button>
+                    {e.estado === 'PENDIENTE' && (
+                      <button className="btn btn-sm btn-primary" onClick={() => avanzarEstadoEnvio(e.id_envio, 'EN_TRANSITO', 'Paquete recolectado por operador internacional')}>
+                        <Truck size={14} /> Despachar a Tránsito
+                      </button>
+                    )}
                     {e.estado === 'EN_TRANSITO' && (
                       <>
                         <button className="btn btn-sm btn-amber" onClick={() => avanzarEstadoEnvio(e.id_envio, 'EN_ADUANA', 'Ingreso a revisión aduanera en país destino')}>
-                          🛃 Ingresar a Aduana
+                          <Landmark size={14} /> Ingresar a Aduana
                         </button>
                         <button className="btn btn-sm btn-accent" onClick={() => avanzarEstadoEnvio(e.id_envio, 'ENTREGADO', 'Recepción final confirmada por destinatario')}>
-                          ✓ Confirmar Entrega
+                          <CheckCircle2 size={14} /> Confirmar Entrega
                         </button>
                       </>
                     )}
@@ -590,7 +876,7 @@ export const PanelOperativo: React.FC<Props> = ({
             subtitulo="RN16: Todo comprobante emitido es estrictamente de solo lectura; las devoluciones se respaldan con Nota de Crédito."
             accionesCabecera={
               <button className="btn btn-audit-probe" onClick={simularIntentoAlteracionFactura}>
-                🧪 Simular intento de alteración (Prueba de auditoría RN16)
+                <FlaskConical size={14} /> Simular intento de alteración (Prueba de auditoría RN16)
               </button>
             }
             columnas={[
@@ -606,6 +892,12 @@ export const PanelOperativo: React.FC<Props> = ({
                 render: (f) => (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-start' }}>
                     <ImmutableTag />
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => setDocImprimible({ tipo: 'COMPROBANTE', datos: f })}
+                    >
+                      <Printer size={14} /> Ver / Imprimir
+                    </button>
                     {f.factura_origen_numero && (
                       <span className="mono" style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
                         Vinculada a {f.factura_origen_numero}
@@ -645,6 +937,16 @@ export const PanelOperativo: React.FC<Props> = ({
               <OperationalTable
                 titulo="Reporte Gerencial Controlado Multidimensional (RF20 / CA-FUNC-10)"
                 subtitulo={`Coincidencias exactas: ${reporteMulti.cantidadRegistros} pedidos • Total consolidado en moneda base: $${Number(reporteMulti.totalConsolidadoUsd).toFixed(2)} USD`}
+                accionesCabecera={
+                  <>
+                    <button className="btn btn-sm btn-accent" onClick={exportarReporteCsv}>
+                      <Download size={15} /> Exportar CSV (CU12)
+                    </button>
+                    <button className="btn btn-sm btn-outline" onClick={() => window.print()}>
+                      <Printer size={15} /> Imprimir / PDF
+                    </button>
+                  </>
+                }
                 filtrosSlot={
                   <div className="form-grid" style={{ alignItems: 'end' }}>
                     <div>
@@ -685,8 +987,12 @@ export const PanelOperativo: React.FC<Props> = ({
                       </select>
                     </div>
                     <div>
-                      <label>Rango Fecha Desde</label>
+                      <label>Fecha Desde</label>
                       <input type="date" className="mono" value={filtros.fechaDesde} onChange={(e) => setFiltros({ ...filtros, fechaDesde: e.target.value })} />
+                    </div>
+                    <div>
+                      <label>Fecha Hasta</label>
+                      <input type="date" className="mono" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
                     </div>
                     <div>
                       <button className="btn btn-primary" style={{ width: '100%' }} onClick={consultarReporteFiltrado}>
@@ -768,6 +1074,91 @@ export const PanelOperativo: React.FC<Props> = ({
           </div>
         )}
 
+        {rol === 'ADMINISTRADOR' && seccionActiva === 'MONEDAS_TASAS' && (
+          <div>
+            <div className="card">
+              <h3 className="section-subtitle">Configurar Divisas Habilitadas y Tasas de Cambio (PARAM_MONEDA / RF22)</h3>
+              <form onSubmit={guardarMonedaParametrica} className="form-grid" style={{ alignItems: 'end' }}>
+                <div><label>Código ISO (ej. GBP)</label><input className="mono" value={nuevaMoneda.codigoMoneda} onChange={(e) => setNuevaMoneda({ ...nuevaMoneda, codigoMoneda: e.target.value })} required /></div>
+                <div><label>Nombre Divisa</label><input value={nuevaMoneda.nombre} onChange={(e) => setNuevaMoneda({ ...nuevaMoneda, nombre: e.target.value })} required /></div>
+                <div><label>Símbolo</label><input className="mono" value={nuevaMoneda.simbolo} onChange={(e) => setNuevaMoneda({ ...nuevaMoneda, simbolo: e.target.value })} required /></div>
+                <div><label>Tasa respecto a 1 USD</label><input className="mono" type="number" step="0.0001" value={nuevaMoneda.tasaRespectoUsd} onChange={(e) => setNuevaMoneda({ ...nuevaMoneda, tasaRespectoUsd: e.target.value })} required /></div>
+                <div><button type="submit" className="btn btn-primary" style={{ width: '100%' }}>Guardar Divisa y Tasa</button></div>
+              </form>
+            </div>
+            <OperationalTable
+              titulo="Monedas Activas y Tasas Vigentes (RNF09)"
+              columnas={[
+                { key: 'codigo_moneda', titulo: 'ISO', mono: true },
+                { key: 'nombre', titulo: 'Moneda', render: (m) => <strong>{m.nombre}</strong> },
+                { key: 'simbolo', titulo: 'Símbolo', mono: true },
+                { key: 'es_base', titulo: 'Moneda Base', render: (m) => m.es_base ? <StatusBadge estado="APROBADO" texto="BASE USD" /> : 'Secundaria' }
+              ]}
+              datos={parametros?.monedas || []}
+            />
+          </div>
+        )}
+
+        {rol === 'ADMINISTRADOR' && seccionActiva === 'ARANCELES_HS' && (
+          <div>
+            <div className="card">
+              <h3 className="section-subtitle">Configurar Partidas Arancelarias HS y Restricciones por País (PARAM_ARANCEL / RN12)</h3>
+              <form onSubmit={guardarArancelParametrico} className="form-grid" style={{ alignItems: 'end' }}>
+                <div>
+                  <label>País Destino</label>
+                  <select value={nuevoArancel.codigoPais} onChange={(e) => setNuevoArancel({ ...nuevoArancel, codigoPais: e.target.value })}>
+                    {parametros?.paises?.map((p: any) => (
+                      <option key={p.codigo_pais} value={p.codigo_pais}>{p.nombre} ({p.codigo_pais})</option>
+                    ))}
+                  </select>
+                </div>
+                <div><label>Código Arancelario HS</label><input className="mono" value={nuevoArancel.codigoArancelario} onChange={(e) => setNuevoArancel({ ...nuevoArancel, codigoArancelario: e.target.value })} required /></div>
+                <div><label>Tasa Arancel (0 a 1)</label><input className="mono" type="number" step="0.01" value={nuevoArancel.tasaArancel} onChange={(e) => setNuevoArancel({ ...nuevoArancel, tasaArancel: e.target.value })} required /></div>
+                <div>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <input type="checkbox" style={{ width: 'auto' }} checked={nuevoArancel.restringido} onChange={(e) => setNuevoArancel({ ...nuevoArancel, restringido: e.target.checked })} />
+                    Partida Restringida (RN12)
+                  </label>
+                </div>
+                <div><button type="submit" className="btn btn-primary" style={{ width: '100%' }}>Guardar Partida HS</button></div>
+              </form>
+            </div>
+            <OperationalTable
+              titulo="Tabla Paramétrica de Aranceles Aduaneros (PARAM_ARANCEL)"
+              columnas={[
+                { key: 'codigo_pais', titulo: 'País', mono: true, render: (a) => `${a.nombre_pais} (${a.codigo_pais})` },
+                { key: 'codigo_arancelario', titulo: 'Partida HS', mono: true },
+                { key: 'tasa_arancel', titulo: 'Tasa Arancel', mono: true, render: (a) => `${(Number(a.tasa_arancel) * 100).toFixed(1)}%` },
+                { key: 'restringido', titulo: 'Control Aduanero', render: (a) => <StatusBadge estado={a.restringido ? 'RECHAZADO' : 'APROBADO'} texto={a.restringido ? 'RESTRINGIDO RN12' : 'PERMITIDO'} /> }
+              ]}
+              datos={aranceles}
+            />
+          </div>
+        )}
+
+        {rol === 'ADMINISTRADOR' && seccionActiva === 'OPERADORES_IDIOMAS' && (
+          <div style={{ display: 'grid', gap: '16px' }}>
+            <div className="card">
+              <h3 className="section-subtitle">Configurar Operadores Logísticos Internacionales (PARAM_OPERADOR_LOGISTICO)</h3>
+              <form onSubmit={guardarOperadorParametrico} className="form-grid" style={{ alignItems: 'end' }}>
+                <div><label>Código Operador</label><input className="mono" value={nuevoOperador.codigoOperador} onChange={(e) => setNuevoOperador({ ...nuevoOperador, codigoOperador: e.target.value })} required /></div>
+                <div><label>Nombre Comercial</label><input value={nuevoOperador.nombre} onChange={(e) => setNuevoOperador({ ...nuevoOperador, nombre: e.target.value })} required /></div>
+                <div><label>Tarifa Base (USD)</label><input className="mono" type="number" step="0.5" value={nuevoOperador.tarifaBaseUsd} onChange={(e) => setNuevoOperador({ ...nuevoOperador, tarifaBaseUsd: e.target.value })} required /></div>
+                <div><label>Días Estimados</label><input className="mono" type="number" value={nuevoOperador.diasEstimados} onChange={(e) => setNuevoOperador({ ...nuevoOperador, diasEstimados: e.target.value })} required /></div>
+                <div><button type="submit" className="btn btn-primary" style={{ width: '100%' }}>Guardar Operador</button></div>
+              </form>
+            </div>
+            <div className="card">
+              <h3 className="section-subtitle">Configurar Idiomas Soportados del Portal (PARAM_IDIOMA / RNF07)</h3>
+              <form onSubmit={guardarIdiomaParametrico} className="form-grid" style={{ alignItems: 'end' }}>
+                <div><label>Código ISO Idioma</label><input className="mono" value={nuevoIdioma.codigoIdioma} onChange={(e) => setNuevoIdioma({ ...nuevoIdioma, codigoIdioma: e.target.value })} required /></div>
+                <div><label>Nombre Idioma</label><input value={nuevoIdioma.nombre} onChange={(e) => setNuevoIdioma({ ...nuevoIdioma, nombre: e.target.value })} required /></div>
+                <div><button type="submit" className="btn btn-accent" style={{ width: '100%' }}>Guardar Idioma</button></div>
+              </form>
+            </div>
+          </div>
+        )}
+
         {rol === 'ADMINISTRADOR' && seccionActiva === 'SEGREGACION' && (
           <div className="card">
             <h3 className="section-subtitle">Verificación de Segregación Estricta de Funciones (RN20 / CA-FUNC-12)</h3>
@@ -775,11 +1166,59 @@ export const PanelOperativo: React.FC<Props> = ({
               Conforme a <b>RN20</b> y <b>DESIGN.md §4</b>, el rol <code>ADMINISTRADOR</code> opera exclusivamente sobre tablas paramétricas comerciales y no posee controles ni permisos sobre usuarios, hashes <code>bcrypt</code> ni la bitácora <code>AUDITORIA</code>.
             </p>
             <button className="btn btn-audit-probe" onClick={probarViolacionSegregacionRn20}>
-              🧪 Simular intento de acceso cruzado a /api/seguridad/usuarios (Demostrar Bloqueo 403 + Auditoría)
+              <FlaskConical size={14} /> Simular intento de acceso cruzado a /api/seguridad/usuarios (Demostrar Bloqueo 403 + Auditoría)
             </button>
           </div>
         )}
       </div>
+
+      {/* MODAL DE EDICIÓN DE PRODUCTO (CU01) */}
+      {prodEditModal && (
+        <div className="modal-backdrop">
+          <div className="modal-box" style={{ maxWidth: '640px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <h3 className="section-subtitle icon-inline" style={{ margin: 0 }}>
+                <Pencil size={17} /> Editar Producto {prodEditModal.codigo} (CU01)
+              </h3>
+              <button className="btn btn-sm btn-outline" onClick={() => setProdEditModal(null)} aria-label="Cerrar">
+                <X size={15} />
+              </button>
+            </div>
+            <form onSubmit={guardarEdicionProducto} style={{ display: 'grid', gap: '12px' }}>
+              <div className="form-grid">
+                <div><label>Categoría</label><input value={prodEditModal.categoria} onChange={(e) => setProdEditModal({ ...prodEditModal, categoria: e.target.value })} required /></div>
+                <div><label>Partida HS</label><input className="mono" value={prodEditModal.codigoArancelario} onChange={(e) => setProdEditModal({ ...prodEditModal, codigoArancelario: e.target.value })} required /></div>
+                <div><label>Precio Base (USD)</label><input className="mono" type="number" step="0.01" value={prodEditModal.precioBaseUsd} onChange={(e) => setProdEditModal({ ...prodEditModal, precioBaseUsd: e.target.value })} required /></div>
+                <div><label>Stock Vendible</label><input className="mono" type="number" value={prodEditModal.stock} onChange={(e) => setProdEditModal({ ...prodEditModal, stock: e.target.value })} required /></div>
+                <div><label>Peso (kg)</label><input className="mono" type="number" step="0.01" value={prodEditModal.pesoKg} onChange={(e) => setProdEditModal({ ...prodEditModal, pesoKg: e.target.value })} required /></div>
+                <div><label>Dimensiones</label><input className="mono" value={prodEditModal.dimensiones} onChange={(e) => setProdEditModal({ ...prodEditModal, dimensiones: e.target.value })} required /></div>
+              </div>
+              <div className="form-grid">
+                <div><label>Nombre (ES)</label><input value={prodEditModal.nombreEs} onChange={(e) => setProdEditModal({ ...prodEditModal, nombreEs: e.target.value })} required /></div>
+                <div><label>Name (EN)</label><input value={prodEditModal.nombreEn} onChange={(e) => setProdEditModal({ ...prodEditModal, nombreEn: e.target.value })} /></div>
+                <div><label>Nome (PT)</label><input value={prodEditModal.nombrePt} onChange={(e) => setProdEditModal({ ...prodEditModal, nombrePt: e.target.value })} /></div>
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <input type="checkbox" style={{ width: 'auto' }} checked={prodEditModal.estado} onChange={(e) => setProdEditModal({ ...prodEditModal, estado: e.target.checked })} />
+                Producto Activo en Catálogo Público
+              </label>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <button type="button" className="btn btn-outline" onClick={() => setProdEditModal(null)}>Cancelar</button>
+                <button type="submit" className="btn btn-accent">Guardar Cambios y Recalcular Divisas</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE COMPROBANTE TRIBUTARIO / ETIQUETA CN23 IMPRIMIBLE */}
+      {docImprimible && (
+        <DocumentoImprimibleModal
+          tipo={docImprimible.tipo}
+          datos={docImprimible.datos}
+          onCerrar={() => setDocImprimible(null)}
+        />
+      )}
     </div>
   );
 };

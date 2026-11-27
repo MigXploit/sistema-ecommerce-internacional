@@ -2,6 +2,7 @@ package com.tienda.pedidos;
 
 import com.tienda.catalogo.ControladorCatalogo;
 import com.tienda.dominio.CalculadorDominio;
+import com.tienda.facturacion.ServicioFacturacion;
 import com.tienda.integraciones.AdaptadoresExternos;
 import com.tienda.seguridad.FiltroSeguridadRbac;
 import com.tienda.seguridad.ServicioAuditoria;
@@ -29,13 +30,16 @@ public class ControladorPedido {
     private final JdbcTemplate jdbc;
     private final ControladorCatalogo catalogo;
     private final AdaptadoresExternos adaptadores;
+    private final ServicioFacturacion facturacion;
     private final ServicioAuditoria auditoria;
 
     public ControladorPedido(JdbcTemplate jdbc, ControladorCatalogo catalogo,
-                             AdaptadoresExternos adaptadores, ServicioAuditoria auditoria) {
+                             AdaptadoresExternos adaptadores, ServicioFacturacion facturacion,
+                             ServicioAuditoria auditoria) {
         this.jdbc = jdbc;
         this.catalogo = catalogo;
         this.adaptadores = adaptadores;
+        this.facturacion = facturacion;
         this.auditoria = auditoria;
     }
 
@@ -204,15 +208,76 @@ public class ControladorPedido {
         var peds = jdbc.queryForList("SELECT * FROM pedido WHERE id_pedido = ?", idPedido);
         if (peds.isEmpty()) return ResponseEntity.notFound().build();
 
-        String estadoActual = (String) peds.get(0).get("estado");
-        if (!"CREADO".equals(estadoActual)) {
-            return ResponseEntity.badRequest().body(Map.of(
-                    "mensaje", "D08 / RN05: Solo pedidos en estado CREADO sin despacho pueden cancelarse directamente."));
+        Map<String, Object> ped = peds.get(0);
+        int idCliente = ((Number) ped.get("id_cliente")).intValue();
+        if ("CLIENTE".equals(sesion.tipoCuenta()) && sesion.idSujeto() != idCliente) {
+            return ResponseEntity.status(403).body(Map.of("mensaje", "No tiene permisos para cancelar pedidos de otro cliente."));
         }
-        jdbc.update("UPDATE pedido SET estado = 'CANCELADO' WHERE id_pedido = ?", idPedido);
-        auditoria.registrar("INTERNO".equals(sesion.tipoCuenta()) ? sesion.idSujeto() : null,
-                sesion.identificador(), "CANCELACION_PEDIDO", "PEDIDO", idPedido, "EXITOSO", "Pedido cancelado antes del pago");
-        return ResponseEntity.ok(Map.of("mensaje", "Pedido #" + idPedido + " cancelado."));
+
+        String estadoActual = (String) ped.get("estado");
+        if ("CREADO".equals(estadoActual)) {
+            jdbc.update("UPDATE pedido SET estado = 'CANCELADO' WHERE id_pedido = ?", idPedido);
+            auditoria.registrar("INTERNO".equals(sesion.tipoCuenta()) ? sesion.idSujeto() : null,
+                    sesion.identificador(), "CANCELACION_PEDIDO", "PEDIDO", idPedido, "EXITOSO", "Pedido cancelado antes del pago");
+            return ResponseEntity.ok(Map.of("mensaje", "Pedido #" + idPedido + " cancelado correctamente."));
+        }
+
+        if ("PAGADO".equals(estadoActual)) {
+            Integer envios = jdbc.queryForObject("SELECT COUNT(*) FROM envio WHERE id_pedido = ?", Integer.class, idPedido);
+            if (envios != null && envios > 0) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "mensaje", "D08: El pedido ya cuenta con guía logística emitida y no puede cancelarse directamente."));
+            }
+            // D08: Cancelación antes de preparación -> restaurar stock vendible, reembolso total + Nota de Crédito
+            var detalles = jdbc.queryForList("SELECT id_producto, cantidad FROM detalle_pedido WHERE id_pedido = ?", idPedido);
+            for (var det : detalles) {
+                jdbc.update("UPDATE producto SET stock = stock + ? WHERE id_producto = ?",
+                        det.get("cantidad"), det.get("id_producto"));
+            }
+            var pagos = jdbc.queryForList("SELECT * FROM pago WHERE id_pedido = ? AND estado = 'APROBADO' ORDER BY id_pago DESC LIMIT 1", idPedido);
+            Map<String, Object> nc = null;
+            if (!pagos.isEmpty()) {
+                Map<String, Object> pg = pagos.get(0);
+                int idPago = ((Number) pg.get("id_pago")).intValue();
+                BigDecimal monto = (BigDecimal) pg.get("monto");
+                String moneda = (String) pg.get("moneda");
+                adaptadores.ejecutarReembolsoPasarela((String) pg.get("referencia_pasarela"), monto, moneda);
+
+                KeyHolder khReem = new GeneratedKeyHolder();
+                Integer idAutoriza = "INTERNO".equals(sesion.tipoCuenta()) ? sesion.idSujeto() : null;
+                jdbc.update(con -> {
+                    PreparedStatement ps = con.prepareStatement("""
+                        INSERT INTO reembolso (id_pago, id_producto_afectado, unidades_defectuosas, monto,
+                                               causal_devolucion, motivo, evidencia_ref, inspeccion_aprobada,
+                                               id_usuario_autoriza, estado, fecha_reembolso)
+                        VALUES (?, NULL, 0, ?, 'CANCELACION', 'Cancelación de pedido pagado antes de preparación logística (D08)',
+                                'CANCELACION_PRE_DESPACHO', TRUE, ?, 'APROBADO', CURRENT_TIMESTAMP)
+                    """, new String[]{"id_reembolso"});
+                    ps.setInt(1, idPago);
+                    ps.setBigDecimal(2, monto);
+                    if (idAutoriza != null) ps.setInt(3, idAutoriza);
+                    else ps.setNull(3, java.sql.Types.INTEGER);
+                    return ps;
+                }, khReem);
+
+                int idReem = khReem.getKey().intValue();
+                jdbc.update("UPDATE pago SET estado = 'REEMBOLSADO' WHERE id_pago = ?", idPago);
+                nc = facturacion.emitirNotaCreditoVinculada(idPedido, idReem, monto, idAutoriza, sesion.identificador());
+                adaptadores.notificarClienteEnSuIdioma(idCliente, idPedido, "REEMBOLSO_APROBADO_NC",
+                        "Cancelación pre-despacho " + monto + " " + moneda + " - Nota de Crédito " + nc.get("numero"));
+            }
+            jdbc.update("UPDATE pedido SET estado = 'CANCELADO' WHERE id_pedido = ?", idPedido);
+            auditoria.registrar("INTERNO".equals(sesion.tipoCuenta()) ? sesion.idSujeto() : null,
+                    sesion.identificador(), "CANCELACION_PEDIDO_PAGADO_D08", "PEDIDO", idPedido, "EXITOSO",
+                    "Pedido pagado cancelado antes de preparación con reembolso total y Nota de Crédito");
+            return ResponseEntity.ok(Map.of(
+                    "mensaje", "Pedido #" + idPedido + " cancelado antes de preparación con reembolso y Nota de Crédito emitida.",
+                    "notaCredito", nc != null ? nc : Map.of()
+            ));
+        }
+
+        return ResponseEntity.badRequest().body(Map.of(
+                "mensaje", "D08 / RN05: Solo pedidos en estado CREADO o PAGADO sin guía logística pueden cancelarse."));
     }
 
     private Map<String, Object> calcularDesgloseInternacional(CotizacionPedidoReq req) {

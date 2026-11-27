@@ -110,7 +110,8 @@ public class FiltroSeguridadRbac extends OncePerRequestFilter {
         if (path.equals("/api/salud")) return true;
         if ("GET".equalsIgnoreCase(method) && (
                 path.startsWith("/api/catalogo") ||
-                path.startsWith("/api/parametros/publicos")
+                path.startsWith("/api/parametros/publicos") ||
+                path.startsWith("/api/envios/seguimiento")
         )) {
             return true;
         }

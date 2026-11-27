@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ShoppingCart } from 'lucide-react';
 import { IdiomaCode, TEXTOS } from '../i18n';
 import { StatusBadge } from './StatusBadge';
 
@@ -59,7 +60,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ producto, idioma, onAg
           </div>
 
           <button className="btn btn-accent" onClick={() => onAgregar(producto)}>
-            + {t.agregarCarrito}
+            <ShoppingCart size={16} /> {t.agregarCarrito}
           </button>
         </div>
       </div>

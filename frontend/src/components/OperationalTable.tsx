@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 export interface ColumnaTabla<T = any> {
   key: string;
@@ -97,7 +98,7 @@ export function OperationalTable<T = any>({
               disabled={paginaSegura <= 1}
               onClick={() => setPagina(paginaSegura - 1)}
             >
-              ← Anterior
+              <ChevronLeft size={14} /> Anterior
             </button>
             <span className="mono" style={{ padding: '0 6px' }}>
               Pág. {paginaSegura} / {totalPaginas}
@@ -107,7 +108,7 @@ export function OperationalTable<T = any>({
               disabled={paginaSegura >= totalPaginas}
               onClick={() => setPagina(paginaSegura + 1)}
             >
-              Siguiente →
+              Siguiente <ChevronRight size={14} />
             </button>
           </div>
         )}

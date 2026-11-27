@@ -121,6 +121,61 @@ public class ControladorCliente {
         ));
     }
 
+    public record ActualizarPerfilReq(
+            String nombres,
+            String apellidos,
+            String pais,
+            String idioma,
+            String monedaPreferida,
+            String datosFiscales
+    ) {}
+
+    @GetMapping("/api/clientes/perfil")
+    public ResponseEntity<?> obtenerMiPerfil(HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
+        if (!"CLIENTE".equals(sesion.tipoCuenta())) {
+            return ResponseEntity.status(403).body(Map.of("mensaje", "Endpoint exclusivo para cuentas de clientes."));
+        }
+        var filas = jdbc.queryForList("""
+            SELECT id_cliente, nombres, apellidos, correo, pais, idioma, moneda_preferida, datos_fiscales, fecha_registro
+            FROM cliente WHERE id_cliente = ?
+        """, sesion.idSujeto());
+        if (filas.isEmpty()) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok(filas.get(0));
+    }
+
+    @PutMapping("/api/clientes/perfil")
+    @Transactional
+    public ResponseEntity<?> actualizarMiPerfil(@RequestBody ActualizarPerfilReq req, HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
+        if (!"CLIENTE".equals(sesion.tipoCuenta())) {
+            return ResponseEntity.status(403).body(Map.of("mensaje", "Solo clientes pueden actualizar su perfil fiscal."));
+        }
+        if (req.nombres() == null || req.nombres().isBlank() || req.datosFiscales() == null || req.datosFiscales().isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("mensaje", "Nombres e identificación fiscal son obligatorios."));
+        }
+        String pais = req.pais() != null ? req.pais().toUpperCase() : "US";
+        var paises = jdbc.queryForList("SELECT habilitado, nombre FROM param_pais WHERE codigo_pais = ?", pais);
+        if (paises.isEmpty() || !Boolean.TRUE.equals(paises.get(0).get("habilitado"))) {
+            return ResponseEntity.badRequest().body(Map.of("mensaje", "RN12: El país seleccionado no está habilitado."));
+        }
+
+        jdbc.update("""
+            UPDATE cliente
+            SET nombres = ?, apellidos = ?, pais = ?, idioma = ?, moneda_preferida = ?, datos_fiscales = ?
+            WHERE id_cliente = ?
+        """, req.nombres().trim(), req.apellidos() != null ? req.apellidos().trim() : "",
+                pais,
+                req.idioma() != null ? req.idioma().toUpperCase() : "ES",
+                req.monedaPreferida() != null ? req.monedaPreferida().toUpperCase() : "USD",
+                req.datosFiscales().trim(),
+                sesion.idSujeto());
+
+        auditoria.registrar(null, sesion.identificador(), "ACTUALIZACION_PERFIL_CLIENTE",
+                "CLIENTE", sesion.idSujeto(), "EXITOSO", "Actualización de perfil, preferencias e ID fiscal");
+        return ResponseEntity.ok(Map.of("mensaje", "Perfil y datos fiscales actualizados correctamente."));
+    }
+
     @GetMapping("/api/clientes/mis-direcciones")
     public List<Map<String, Object>> listarMisDirecciones(HttpServletRequest httpReq) {
         var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
@@ -149,6 +204,41 @@ public class ControladorCliente {
                 req.tipo() != null ? req.tipo().toUpperCase() : "ENVIO",
                 req.pais().toUpperCase(), req.ciudad().trim(), req.lineaDireccion().trim(), req.codigoPostal().trim());
         return ResponseEntity.ok(Map.of("mensaje", "Dirección internacional registrada correctamente."));
+    }
+
+    @PutMapping("/api/clientes/direcciones/{idDireccion}")
+    public ResponseEntity<?> actualizarDireccion(@PathVariable int idDireccion,
+                                                 @RequestBody NuevaDireccionReq req,
+                                                 HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
+        String error = validarPaisYCodigoPostal(req.pais(), req.codigoPostal());
+        if (error != null) {
+            return ResponseEntity.badRequest().body(Map.of("mensaje", error));
+        }
+        int updated = jdbc.update("""
+            UPDATE direccion
+            SET tipo = ?, pais = ?, ciudad = ?, linea_direccion = ?, codigo_postal = ?
+            WHERE id_direccion = ? AND id_cliente = ?
+        """, req.tipo() != null ? req.tipo().toUpperCase() : "ENVIO",
+                req.pais().toUpperCase(), req.ciudad().trim(), req.lineaDireccion().trim(), req.codigoPostal().trim(),
+                idDireccion, sesion.idSujeto());
+        if (updated == 0) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok(Map.of("mensaje", "Dirección internacional actualizada correctamente."));
+    }
+
+    @DeleteMapping("/api/clientes/direcciones/{idDireccion}")
+    public ResponseEntity<?> eliminarDireccion(@PathVariable int idDireccion, HttpServletRequest httpReq) {
+        var sesion = (ServicioJwtRs256.SesionToken) httpReq.getAttribute(FiltroSeguridadRbac.ATTR_SESION);
+        Integer enUso = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM pedido WHERE id_direccion = ?", Integer.class, idDireccion);
+        if (enUso != null && enUso > 0) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "mensaje", "No se puede eliminar la dirección porque está vinculada a pedidos históricos (trazabilidad fiscal)."));
+        }
+        int deleted = jdbc.update("DELETE FROM direccion WHERE id_direccion = ? AND id_cliente = ?",
+                idDireccion, sesion.idSujeto());
+        if (deleted == 0) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok(Map.of("mensaje", "Dirección eliminada correctamente."));
     }
 
     @GetMapping("/api/clientes/mis-notificaciones")

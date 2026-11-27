@@ -1,15 +1,33 @@
 import React, { useEffect, useState } from 'react';
+import {
+  AlertTriangle,
+  CreditCard,
+  Plane,
+  Printer,
+  Radar,
+  RefreshCw,
+  Scale,
+  ShieldCheck,
+  ShoppingBag,
+  Sparkles,
+  Trash2,
+  User,
+  X
+} from 'lucide-react';
 import { apiFetch, UsuarioSesion } from './api';
 import { IdiomaCode, MonedaCode, TEXTOS } from './i18n';
 import { ProductCard } from './components/ProductCard';
 import { CheckoutStepper, ItemCarrito } from './components/CheckoutStepper';
 import { ImmutableTag, StatusBadge } from './components/StatusBadge';
 import { OperationalTable } from './components/OperationalTable';
+import { DocumentoImprimibleModal } from './components/DocumentoImprimibleModal';
 import {
   modalConfirmarEnvioReclamo,
   modalConfirmarPagoCongelado,
+  modalConfirmarVaciarCarrito,
   modalErrorValidacionOAduana,
   modalExitoReclamo,
+  modalLimpiarPedidosInmutablesRn16,
   modalPagoAprobadoExito,
   toastExito,
   toastInfo
@@ -22,7 +40,15 @@ interface Props {
   usuario: UsuarioSesion | null;
   parametros: any;
   vista: 'CATALOGO' | 'MIS_PEDIDOS';
-  onCambiarVista: (v: 'TIENDA' | 'MIS_PEDIDOS') => void;
+  busqueda: string;
+  categoria: string;
+  busquedaTrigger: number;
+  onCategoriasDetectadas: (cats: string[]) => void;
+  carritoAbierto: boolean;
+  setCarritoAbierto: (v: boolean) => void;
+  onCantidadCarritoChange: (n: number) => void;
+  onCambiarVista: (v: 'TIENDA' | 'MIS_PEDIDOS' | 'RASTREO') => void;
+  onRastrearGuia: (guia: string) => void;
   notificar: (tipo: 'ok' | 'err', msg: string) => void;
   pedirLogin: () => void;
 }
@@ -36,14 +62,22 @@ export const TiendaPortal: React.FC<Props> = ({
   usuario,
   parametros,
   vista,
+  busqueda,
+  categoria,
+  busquedaTrigger,
+  onCategoriasDetectadas,
+  carritoAbierto,
+  setCarritoAbierto,
+  onCantidadCarritoChange,
   onCambiarVista,
+  onRastrearGuia,
   notificar,
   pedirLogin
 }) => {
   const t = TEXTOS[idioma];
   const [productos, setProductos] = useState<any[]>([]);
-  const [busqueda, setBusqueda] = useState('');
-  const [categoria, setCategoria] = useState('TODAS');
+  const [cargandoCatalogo, setCargandoCatalogo] = useState(false);
+  const [precioMin, setPrecioMin] = useState<string>('');
   const [precioMax, setPrecioMax] = useState<string>('');
   const [carrito, setCarrito] = useState<ItemCarrito[]>([]);
 
@@ -64,32 +98,51 @@ export const TiendaPortal: React.FC<Props> = ({
   const [mostrarFormDir, setMostrarFormDir] = useState(false);
   const [nuevaDir, setNuevaDir] = useState({ pais: 'BR', ciudad: '', lineaDireccion: '', codigoPostal: '' });
 
-  // Mis pedidos y postventa
+  // Mis pedidos, perfil, comprobantes y postventa
   const [misPedidos, setMisPedidos] = useState<any[]>([]);
   const [notificaciones, setNotificaciones] = useState<any[]>([]);
+  const [comprobanteModal, setComprobanteModal] = useState<any | null>(null);
+  const [mostrarPerfil, setMostrarPerfil] = useState(false);
+  const [perfilForm, setPerfilForm] = useState({
+    nombres: '',
+    apellidos: '',
+    pais: 'BR',
+    idioma: 'ES',
+    monedaPreferida: 'USD',
+    datosFiscales: ''
+  });
   const [devolucionModal, setDevolucionModal] = useState<any | null>(null);
   const [formDev, setFormDev] = useState({
     idProductoAfectado: 0,
     causalDevolucion: 'PRODUCTO_DEFECTUOSO',
     unidadesDefectuosas: 1,
+    montoSolicitado: '',
     motivo: '',
     evidenciaRef: 'EVID-FOTO-CLIENTE-2026.jpg'
   });
 
   const cargarCatalogo = async () => {
+    setCargandoCatalogo(true);
     try {
       const qs = new URLSearchParams({
         idioma,
         moneda,
         ...(categoria !== 'TODAS' ? { categoria } : {}),
         ...(busqueda.trim() ? { q: busqueda.trim() } : {}),
+        ...(precioMin.trim() && Number(precioMin) > 0 ? { precioMin: precioMin.trim() } : {}),
         ...(precioMax.trim() && Number(precioMax) > 0 ? { precioMax: precioMax.trim() } : {}),
         ...(usuario?.pais ? { paisCliente: usuario.pais } : {})
       });
       const data = await apiFetch<any[]>(`/api/catalogo?${qs.toString()}`);
       setProductos(data);
+      if (categoria === 'TODAS' && !busqueda.trim() && !precioMin && !precioMax) {
+        const cats = ['TODAS', ...Array.from(new Set(data.map((p) => p.categoria)))];
+        onCategoriasDetectadas(cats);
+      }
     } catch (e: any) {
       notificar('err', e.message);
+    } finally {
+      setCargandoCatalogo(false);
     }
   };
 
@@ -97,7 +150,13 @@ export const TiendaPortal: React.FC<Props> = ({
     if (vista === 'CATALOGO') {
       cargarCatalogo();
     }
-  }, [idioma, moneda, categoria, vista]);
+  }, [idioma, moneda, categoria, vista, busquedaTrigger]);
+
+  // Sincronizar contador animado del carrito en el HeaderGlobal
+  useEffect(() => {
+    const totalUds = carrito.reduce((acc, it) => acc + it.cantidad, 0);
+    onCantidadCarritoChange(totalUds);
+  }, [carrito]);
 
   // Al cambiar moneda o idioma, actualizar precios de los productos dentro del carrito sin perderlo (CU03)
   useEffect(() => {
@@ -181,11 +240,12 @@ export const TiendaPortal: React.FC<Props> = ({
       return [...prev, { producto: prod, cantidad: 1 }];
     });
 
-    // Toast rápido 3.5s (CU03 - DESIGN.md §5.1)
+    // Toast rápido 3.5s (CU03 - DESIGN.md §5.1) y abrir Checkout Drawer
     toastExito(
       `${prod.nombre_localizado} ${t.toastCarritoAgregado}`,
       `${prod.codigo} • ${prod.simboloMoneda} ${Number(prod.precioConvertido).toFixed(2)} ${prod.moneda}`
     );
+    setCarritoAbierto(true);
   };
 
   const cambiarCantidad = (idProd: number, delta: number) => {
@@ -214,6 +274,73 @@ export const TiendaPortal: React.FC<Props> = ({
       toastInfo(t.toastCarritoEliminado, target.producto.codigo);
     } else {
       toastInfo(`${t.toastCarritoActualizado}: ${nueva} uds`, target.producto.codigo);
+    }
+  };
+
+  const vaciarCarritoConConfirmacion = async () => {
+    const totalUds = carrito.reduce((acc, it) => acc + it.cantidad, 0);
+    if (totalUds === 0) return;
+    const confirmado = await modalConfirmarVaciarCarrito(idioma, totalUds);
+    if (!confirmado) return;
+    setCarrito([]);
+    setCotizacion(null);
+    setPedidoCreado(null);
+    setPasoCheckout(1);
+    toastInfo('Carrito internacional vaciado', '0 uds');
+  };
+
+  const limpiarOCancelarPedidos = async () => {
+    if (!token) return;
+    const pendientesCreados = misPedidos.filter((p) => p.estado === 'CREADO');
+    const protegidos = misPedidos.filter(
+      (p) => p.estado !== 'CREADO' && p.estado !== 'CANCELADO'
+    );
+    const facturasEjemplo = protegidos
+      .flatMap((p) => (p.facturas || []).map((f: any) => f.numero))
+      .filter(Boolean);
+
+    let canceladosCount = 0;
+    for (const ped of pendientesCreados) {
+      try {
+        await apiFetch(`/api/pedidos/${ped.id_pedido}/cancelar`, { method: 'POST' }, token);
+        canceladosCount++;
+      } catch {
+        // continuar con el resto
+      }
+    }
+
+    if (canceladosCount > 0) {
+      await cargarMisPedidos();
+    }
+
+    if (protegidos.length > 0) {
+      const accion = await modalLimpiarPedidosInmutablesRn16({
+        canceladosCount,
+        protegidosCount: protegidos.length,
+        facturasEjemplo
+      });
+      if (accion === 'RESTAURAR_DEMO') {
+        setCarrito([]);
+        setCotizacion(null);
+        setPedidoCreado(null);
+        setPagoConfirmado(null);
+        setPasoCheckout(1);
+        await cargarMisPedidos();
+        toastInfo(
+          'Vista demo restablecida con los registros iniciales verificados',
+          'RN05 / RN16 intactos'
+        );
+      }
+      return;
+    }
+
+    if (canceladosCount > 0) {
+      toastExito(
+        `Se cancelaron ${canceladosCount} pedido(s) en estado CREADO`,
+        'CREADO → CANCELADO (RN05)'
+      );
+    } else {
+      toastInfo('No hay pedidos pendientes en estado CREADO para cancelar');
     }
   };
 
@@ -366,12 +493,105 @@ export const TiendaPortal: React.FC<Props> = ({
     }
   };
 
+  const cargarPerfil = async () => {
+    if (!token || usuario?.tipoCuenta !== 'CLIENTE') return;
+    try {
+      const p = await apiFetch<any>('/api/clientes/perfil', {}, token);
+      setPerfilForm({
+        nombres: p.nombres || '',
+        apellidos: p.apellidos || '',
+        pais: p.pais || 'BR',
+        idioma: p.idioma || 'ES',
+        monedaPreferida: p.moneda_preferida || 'USD',
+        datosFiscales: p.datos_fiscales || ''
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const guardarPerfil = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token) return;
+    try {
+      const resp = await apiFetch('/api/clientes/perfil', {
+        method: 'PUT',
+        body: JSON.stringify(perfilForm)
+      }, token);
+      toastExito(resp.mensaje, perfilForm.datosFiscales);
+      setMostrarPerfil(false);
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ idioma, mensaje: err.message, codigoRef: 'RF05' });
+    }
+  };
+
+  const eliminarDireccion = async (idDir: number) => {
+    if (!token) return;
+    try {
+      const resp = await apiFetch(`/api/clientes/direcciones/${idDir}`, { method: 'DELETE' }, token);
+      toastInfo(resp.mensaje);
+      const dirs = await apiFetch<any[]>('/api/clientes/mis-direcciones', {}, token);
+      setDirecciones(dirs);
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ idioma, mensaje: err.message, codigoRef: 'RF06' });
+    }
+  };
+
+  const pagarPedidoPendiente = async (ped: any) => {
+    if (!token) return;
+    const equivUsd = Number(ped.tasa_aplicada) > 0 ? Number(ped.total) / Number(ped.tasa_aplicada) : Number(ped.total);
+    const confirmado = await modalConfirmarPagoCongelado({
+      idioma,
+      idPedido: ped.id_pedido,
+      total: Number(ped.total),
+      moneda: ped.moneda,
+      equivalenteUsd: equivUsd,
+      medioPago: 'TARJETA'
+    });
+    if (!confirmado) return;
+    try {
+      const resp = await apiFetch('/api/pagos/procesar', {
+        method: 'POST',
+        body: JSON.stringify({
+          idPedido: ped.id_pedido,
+          medioPago: 'TARJETA',
+          tokenPago: `tok_reintento_${Date.now()}`,
+          claveIdempotencia: `RETRY-${ped.id_pedido}-${Date.now()}`
+        })
+      }, token);
+      cargarMisPedidos();
+      await modalPagoAprobadoExito({
+        idioma,
+        referenciaPasarela: resp.referenciaPasarela,
+        numeroFactura: resp.factura?.numero || 'EMITIDA',
+        monto: resp.montoCobrado,
+        moneda: resp.moneda,
+        equivalenteUsd: resp.equivalenteBaseUsd
+      });
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ idioma, mensaje: err.message, codigoRef: 'CU05' });
+    }
+  };
+
+  const cancelarPedido = async (idPedido: number) => {
+    if (!token) return;
+    try {
+      const resp = await apiFetch(`/api/pedidos/${idPedido}/cancelar`, { method: 'POST' }, token);
+      toastInfo(resp.mensaje, `Pedido #${idPedido}`);
+      cargarMisPedidos();
+    } catch (err: any) {
+      await modalErrorValidacionOAduana({ idioma, mensaje: err.message, codigoRef: 'D08 / RN05' });
+    }
+  };
+
   const abrirModalDevolucion = (ped: any) => {
     const primerItem = ped.detalles?.[0];
+    const montoInicial = primerItem ? Number(primerItem.precio_unitario).toFixed(2) : Number(ped.total).toFixed(2);
     setFormDev({
       idProductoAfectado: primerItem?.id_producto || 0,
       causalDevolucion: 'PRODUCTO_DEFECTUOSO',
       unidadesDefectuosas: 1,
+      montoSolicitado: Math.min(Number(montoInicial), Number(ped.total)).toFixed(2),
       motivo: '',
       evidenciaRef: 'EVID-FOTO-CLIENTE-2026.jpg'
     });
@@ -398,7 +618,7 @@ export const TiendaPortal: React.FC<Props> = ({
           idPedido: devolucionModal.id_pedido,
           idProductoAfectado: formDev.idProductoAfectado || devolucionModal.detalles?.[0]?.id_producto || null,
           unidadesDefectuosas: Number(formDev.unidadesDefectuosas),
-          montoSolicitado: devolucionModal.total,
+          montoSolicitado: formDev.montoSolicitado ? Number(formDev.montoSolicitado) : devolucionModal.total,
           causalDevolucion: formDev.causalDevolucion,
           motivo: formDev.motivo,
           evidenciaRef: formDev.evidenciaRef
@@ -443,8 +663,105 @@ export const TiendaPortal: React.FC<Props> = ({
               ID Fiscal: <code className="mono">{usuario.datosFiscales}</code> • {t.misPedidosSub}
             </div>
           </div>
-          <button className="btn btn-outline" onClick={cargarMisPedidos}>{t.actualizarEstado}</button>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-outline"
+              onClick={() => {
+                if (!mostrarPerfil) cargarPerfil();
+                setMostrarPerfil(!mostrarPerfil);
+              }}
+            >
+              <User size={15} /> {mostrarPerfil ? 'Ocultar Perfil y Direcciones' : 'Mi Perfil y Direcciones (RF05/RF06)'}
+            </button>
+            <button
+              className="btn btn-outline"
+              style={{ color: 'var(--state-err-text)', borderColor: '#FCA5A5' }}
+              onClick={limpiarOCancelarPedidos}
+            >
+              <Trash2 size={15} /> Limpiar / Cancelar pedidos
+            </button>
+            <button className="btn btn-outline" onClick={cargarMisPedidos}>
+              <RefreshCw size={15} /> {t.actualizarEstado}
+            </button>
+          </div>
         </div>
+
+        {mostrarPerfil && (
+          <div className="card">
+            <h3 className="section-subtitle icon-inline">
+              <User size={18} /> Perfil Fiscal Internacional y Libreta de Direcciones (RF05 / RF06)
+            </h3>
+            <div className="form-grid">
+              <form onSubmit={guardarPerfil} style={{ display: 'grid', gap: '10px' }}>
+                <div className="form-grid">
+                  <div><label>Nombres</label><input required value={perfilForm.nombres} onChange={(e) => setPerfilForm({ ...perfilForm, nombres: e.target.value })} /></div>
+                  <div><label>Apellidos</label><input required value={perfilForm.apellidos} onChange={(e) => setPerfilForm({ ...perfilForm, apellidos: e.target.value })} /></div>
+                </div>
+                <div className="form-grid">
+                  <div>
+                    <label>País</label>
+                    <select value={perfilForm.pais} onChange={(e) => setPerfilForm({ ...perfilForm, pais: e.target.value })}>
+                      {parametros?.paises?.filter((p: any) => p.habilitado).map((p: any) => (
+                        <option key={p.codigo_pais} value={p.codigo_pais}>{p.nombre} ({p.codigo_pais})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div><label>ID Fiscal (CPF/NIT/EIN/NIF)</label><input className="mono" required value={perfilForm.datosFiscales} onChange={(e) => setPerfilForm({ ...perfilForm, datosFiscales: e.target.value })} /></div>
+                </div>
+                <div className="form-grid">
+                  <div>
+                    <label>Idioma Preferido</label>
+                    <select value={perfilForm.idioma} onChange={(e) => setPerfilForm({ ...perfilForm, idioma: e.target.value })}>
+                      <option value="ES">ES</option>
+                      <option value="EN">EN</option>
+                      <option value="PT">PT</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Moneda Preferida</label>
+                    <select value={perfilForm.monedaPreferida} onChange={(e) => setPerfilForm({ ...perfilForm, monedaPreferida: e.target.value })}>
+                      <option value="USD">USD</option>
+                      <option value="BRL">BRL</option>
+                      <option value="BOB">BOB</option>
+                      <option value="EUR">EUR</option>
+                    </select>
+                  </div>
+                </div>
+                <button type="submit" className="btn btn-primary btn-sm">Guardar Cambios de Perfil</button>
+              </form>
+
+              <div>
+                <strong style={{ fontSize: '13px' }}>Direcciones Internacionales Registradas ({direcciones.length})</strong>
+                <div style={{ display: 'grid', gap: '8px', marginTop: '8px' }}>
+                  {direcciones.map((d) => (
+                    <div
+                      key={d.id_direccion}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '8px 10px',
+                        borderRadius: '8px',
+                        border: '1px solid var(--color-border)',
+                        backgroundColor: 'var(--color-bg)',
+                        fontSize: '12px'
+                      }}
+                    >
+                      <div>
+                        <strong>{d.ciudad} ({d.pais})</strong> — CP <code className="mono">{d.codigo_postal}</code>
+                        <div style={{ color: 'var(--color-text-muted)' }}>{d.linea_direccion}</div>
+                      </div>
+                      <button className="btn btn-sm btn-trash-item" onClick={() => eliminarDireccion(d.id_direccion)} aria-label="Eliminar dirección">
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {misPedidos.map((ped) => {
           let eventos: any[] = [];
@@ -501,8 +818,14 @@ export const TiendaPortal: React.FC<Props> = ({
 
                   {ped.envio ? (
                     <div style={{ marginTop: '8px' }}>
-                      <div className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
-                        Guía: <b>{ped.envio.numero_guia}</b> • Operador: {ped.envio.operador}
+                      <div className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+                        <span>Guía: <b>{ped.envio.numero_guia}</b> • Operador: {ped.envio.operador}</span>
+                        <button
+                          className="btn btn-sm btn-outline"
+                          onClick={() => onRastrearGuia(ped.envio.numero_guia)}
+                        >
+                          <Radar size={14} /> Rastreo Detallado
+                        </button>
                       </div>
 
                       <div className="tracking-steps-bar">
@@ -566,7 +889,15 @@ export const TiendaPortal: React.FC<Props> = ({
                                 Total: {Number(f.total).toFixed(2)} {f.moneda}
                               </div>
                             </div>
-                            <ImmutableTag label={t.inmutableLabel} />
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                              <ImmutableTag label={t.inmutableLabel} />
+                              <button
+                                className="btn btn-sm btn-outline"
+                                onClick={() => setComprobanteModal({ ...f, nombre_cliente: usuario.nombre })}
+                              >
+                                <Printer size={14} /> Ver / Imprimir
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -598,10 +929,29 @@ export const TiendaPortal: React.FC<Props> = ({
                     </div>
                   )}
 
+                  {ped.estado === 'CREADO' && (
+                    <div style={{ marginTop: '14px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button className="btn btn-sm btn-accent" style={{ flex: 1 }} onClick={() => pagarPedidoPendiente(ped)}>
+                        <CreditCard size={15} /> Pagar Pedido Pendiente (CU05)
+                      </button>
+                      <button className="btn btn-sm btn-outline" onClick={() => cancelarPedido(ped.id_pedido)}>
+                        <X size={14} /> Cancelar Pedido
+                      </button>
+                    </div>
+                  )}
+
+                  {ped.estado === 'PAGADO' && !ped.envio && (
+                    <div style={{ marginTop: '14px' }}>
+                      <button className="btn btn-sm btn-outline" style={{ width: '100%' }} onClick={() => cancelarPedido(ped.id_pedido)}>
+                        <X size={14} /> Cancelar Antes de Preparación (Reembolso + Nota de Crédito)
+                      </button>
+                    </div>
+                  )}
+
                   {ped.estado === 'ENTREGADO' && (!ped.reembolsos || ped.reembolsos.length === 0) && (
                     <div style={{ marginTop: '16px' }}>
                       <button className="btn btn-amber" style={{ width: '100%' }} onClick={() => abrirModalDevolucion(ped)}>
-                        ⚠️ {t.reportarDefectoBtn}
+                        <AlertTriangle size={16} /> {t.reportarDefectoBtn}
                       </button>
                     </div>
                   )}
@@ -665,9 +1015,26 @@ export const TiendaPortal: React.FC<Props> = ({
                       min={1}
                       className="mono"
                       value={formDev.unidadesDefectuosas}
-                      onChange={(e) => setFormDev({ ...formDev, unidadesDefectuosas: Number(e.target.value) })}
+                      onChange={(e) => {
+                        const uds = Number(e.target.value);
+                        const itemSel = devolucionModal.detalles?.find((d: any) => d.id_producto === formDev.idProductoAfectado) || devolucionModal.detalles?.[0];
+                        const calc = itemSel ? Math.min(Number(itemSel.precio_unitario) * uds, Number(devolucionModal.total)) : Number(devolucionModal.total);
+                        setFormDev({ ...formDev, unidadesDefectuosas: uds, montoSolicitado: calc.toFixed(2) });
+                      }}
                     />
                   </div>
+                </div>
+                <div>
+                  <label>Monto de Reembolso Solicitado ({devolucionModal.moneda} — Máx. 100%: {Number(devolucionModal.total).toFixed(2)})</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    max={Number(devolucionModal.total)}
+                    className="mono"
+                    value={formDev.montoSolicitado}
+                    onChange={(e) => setFormDev({ ...formDev, montoSolicitado: e.target.value })}
+                  />
                 </div>
                 <div>
                   <label>{t.evidenciaLabel}</label>
@@ -700,66 +1067,179 @@ export const TiendaPortal: React.FC<Props> = ({
             </div>
           </div>
         )}
+        {comprobanteModal && (
+          <DocumentoImprimibleModal
+            tipo="COMPROBANTE"
+            datos={comprobanteModal}
+            onCerrar={() => setComprobanteModal(null)}
+          />
+        )}
       </div>
     );
   }
 
-  const categoriasUnicas = ['TODAS', ...Array.from(new Set(productos.map((p) => p.categoria)))];
+  const renderCheckoutDrawer = () => (
+    <CheckoutStepper
+      abierto={carritoAbierto}
+      onCerrar={() => setCarritoAbierto(false)}
+      idioma={idioma}
+      moneda={moneda}
+      carrito={carrito}
+      paso={pasoCheckout}
+      setPaso={setPasoCheckout}
+      tipoVenta={tipoVenta}
+      setTipoVenta={setTipoVenta}
+      onCambiarCantidad={cambiarCantidad}
+      onVaciarCarrito={vaciarCarritoConConfirmacion}
+      autenticadoComoCliente={Boolean(token && usuario?.tipoCuenta === 'CLIENTE')}
+      direcciones={direcciones}
+      idDireccionSel={idDireccionSel}
+      setIdDireccionSel={setIdDireccionSel}
+      paisCotizacion={paisCotizacion}
+      setPaisCotizacion={setPaisCotizacion}
+      operadorSel={operadorSel}
+      setOperadorSel={setOperadorSel}
+      parametros={parametros}
+      mostrarFormDir={mostrarFormDir}
+      setMostrarFormDir={setMostrarFormDir}
+      nuevaDir={nuevaDir}
+      setNuevaDir={setNuevaDir}
+      onGuardarDireccion={guardarNuevaDireccion}
+      onCotizarPaso3={cotizarPaso3}
+      cotizacion={cotizacion}
+      onConfirmarPedidoPaso3={confirmarPedidoPaso3}
+      pedidoCreado={pedidoCreado}
+      medioPago={medioPago}
+      setMedioPago={setMedioPago}
+      simularRechazo={simularRechazo}
+      setSimularRechazo={setSimularRechazo}
+      onEjecutarPagoPaso4={ejecutarPagoPaso4}
+      pagoConfirmado={pagoConfirmado}
+      onIrAMisPedidos={() => {
+        setPagoConfirmado(null);
+        setCarritoAbierto(false);
+        onCambiarVista('MIS_PEDIDOS');
+      }}
+    />
+  );
 
   return (
-    <div className="store-layout">
-      {/* CATÁLOGO LOCALIZADO Y MULTIMONEDA CON FILTROS (DESIGN.md §3.B) */}
-      <div>
-        <div className="card card-compact">
-          <div className="filter-toolbar">
-            <div>
-              <label>{t.buscarPlaceholder}</label>
-              <input
-                value={busqueda}
-                placeholder={t.buscarPlaceholder}
-                onChange={(e) => setBusqueda(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && cargarCatalogo()}
-              />
-            </div>
-            <div>
-              <label>{t.categoriaLabel}</label>
-              <select value={categoria} onChange={(e) => setCategoria(e.target.value)}>
-                {categoriasUnicas.map((c) => (
-                  <option key={c} value={c}>{c === 'TODAS' ? t.todasCategorias : c}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label>{t.precioMaxLabel} ({moneda})</label>
-              <input
-                type="number"
-                className="mono"
-                placeholder={t.sinLimite}
-                value={precioMax}
-                onChange={(e) => setPrecioMax(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && cargarCatalogo()}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <button className="btn btn-primary" onClick={cargarCatalogo}>{t.buscarBtn}</button>
-              {(busqueda || categoria !== 'TODAS' || precioMax) && (
-                <button
-                  className="btn btn-outline"
-                  onClick={() => {
-                    setBusqueda('');
-                    setCategoria('TODAS');
-                    setPrecioMax('');
-                    setTimeout(cargarCatalogo, 0);
-                  }}
-                >
-                  {t.limpiarFiltros}
-                </button>
-              )}
-            </div>
+    <div className="view-animate">
+      {/* BANNER HERO COMPACTO Y MODERNO CON BENEFICIOS */}
+      <section className="hero-banner">
+        <div style={{ position: 'relative', zIndex: 1 }}>
+          <span className="hero-kicker"><Sparkles size={13} /> {t.heroKicker}</span>
+          <h1 className="hero-title">{t.heroTitulo}</h1>
+          <p className="hero-desc">{t.heroDesc}</p>
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+            <a href="#catalogo-grid" className="btn btn-accent" style={{ textDecoration: 'none' }}>
+              <ShoppingBag size={16} /> {t.heroCtaExplorar}
+            </a>
+            <button
+              className="btn btn-outline"
+              style={{ backgroundColor: 'rgba(255,255,255,0.12)', color: '#FFFFFF', borderColor: 'rgba(255,255,255,0.28)' }}
+              onClick={() => onCambiarVista('RASTREO')}
+            >
+              <Radar size={16} /> {t.heroCtaRastrear}
+            </button>
           </div>
         </div>
 
-        <div className="grid-products">
+        <div className="hero-benefits">
+          <div className="hero-benefit-card">
+            <span className="hero-benefit-icon"><Plane size={18} /></span>
+            <div>
+              <strong style={{ fontSize: '13px', display: 'block' }}>{t.beneficio1Titulo}</strong>
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.8)' }}>{t.beneficio1Desc}</span>
+            </div>
+          </div>
+          <div className="hero-benefit-card">
+            <span className="hero-benefit-icon"><Scale size={18} /></span>
+            <div>
+              <strong style={{ fontSize: '13px', display: 'block' }}>{t.beneficio2Titulo}</strong>
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.8)' }}>{t.beneficio2Desc}</span>
+            </div>
+          </div>
+          <div className="hero-benefit-card">
+            <span className="hero-benefit-icon"><ShieldCheck size={18} /></span>
+            <div>
+              <strong style={{ fontSize: '13px', display: 'block' }}>{t.beneficio3Titulo}</strong>
+              <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.8)' }}>{t.beneficio3Desc}</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* BARRA COMPACTA DE RANGO DE PRECIOS Y CONTEO (RF04) */}
+      <div
+        id="catalogo-grid"
+        className="card card-compact"
+        style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+          <strong style={{ fontSize: '15px' }}>
+            {categoria === 'TODAS' ? t.todasCategorias : categoria}
+          </strong>
+          <span className="mono" style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>
+            ({productos.length} productos • {moneda})
+          </span>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <input
+            type="number"
+            className="mono"
+            style={{ width: '125px' }}
+            placeholder={`${t.precioMinLabel} (${moneda})`}
+            value={precioMin}
+            onChange={(e) => setPrecioMin(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && cargarCatalogo()}
+          />
+          <span style={{ color: 'var(--color-text-muted)' }}>—</span>
+          <input
+            type="number"
+            className="mono"
+            style={{ width: '125px' }}
+            placeholder={`${t.precioMaxLabel} (${moneda})`}
+            value={precioMax}
+            onChange={(e) => setPrecioMax(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && cargarCatalogo()}
+          />
+          <button className="btn btn-sm btn-primary" onClick={cargarCatalogo}>{t.buscarBtn}</button>
+          {(precioMin || precioMax) && (
+            <button
+              className="btn btn-sm btn-outline"
+              onClick={() => {
+                setPrecioMin('');
+                setPrecioMax('');
+                setTimeout(cargarCatalogo, 0);
+              }}
+            >
+              {t.limpiarFiltros}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* GRILLA LIMPIA DE 4 COLUMNAS CON SKELETONS DE CARGA */}
+      {cargandoCatalogo ? (
+        <div className="grid-products-4">
+          {[1, 2, 3, 4].map((n) => (
+            <div className="product-card-skeleton" key={n}>
+              <div className="product-media-4x3">
+                <div className="product-skeleton" />
+              </div>
+              <div style={{ padding: '16px', display: 'grid', gap: '10px' }}>
+                <div className="skeleton-line" style={{ width: '45%' }} />
+                <div className="skeleton-line" style={{ width: '90%', height: '18px' }} />
+                <div className="skeleton-line" style={{ width: '70%' }} />
+                <div className="skeleton-line" style={{ width: '100%', height: '34px', marginTop: '6px' }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="grid-products-4">
           {productos.map((p) => (
             <ProductCard
               key={p.id_producto}
@@ -769,47 +1249,10 @@ export const TiendaPortal: React.FC<Props> = ({
             />
           ))}
         </div>
-      </div>
+      )}
 
-      {/* STEPPER DE CHECKOUT EN 4 PASOS CON DESGLOSE FISCAL STICKY (DESIGN.md §3.C) */}
-      <CheckoutStepper
-        idioma={idioma}
-        moneda={moneda}
-        carrito={carrito}
-        paso={pasoCheckout}
-        setPaso={setPasoCheckout}
-        tipoVenta={tipoVenta}
-        setTipoVenta={setTipoVenta}
-        onCambiarCantidad={cambiarCantidad}
-        autenticadoComoCliente={Boolean(token && usuario?.tipoCuenta === 'CLIENTE')}
-        direcciones={direcciones}
-        idDireccionSel={idDireccionSel}
-        setIdDireccionSel={setIdDireccionSel}
-        paisCotizacion={paisCotizacion}
-        setPaisCotizacion={setPaisCotizacion}
-        operadorSel={operadorSel}
-        setOperadorSel={setOperadorSel}
-        parametros={parametros}
-        mostrarFormDir={mostrarFormDir}
-        setMostrarFormDir={setMostrarFormDir}
-        nuevaDir={nuevaDir}
-        setNuevaDir={setNuevaDir}
-        onGuardarDireccion={guardarNuevaDireccion}
-        onCotizarPaso3={cotizarPaso3}
-        cotizacion={cotizacion}
-        onConfirmarPedidoPaso3={confirmarPedidoPaso3}
-        pedidoCreado={pedidoCreado}
-        medioPago={medioPago}
-        setMedioPago={setMedioPago}
-        simularRechazo={simularRechazo}
-        setSimularRechazo={setSimularRechazo}
-        onEjecutarPagoPaso4={ejecutarPagoPaso4}
-        pagoConfirmado={pagoConfirmado}
-        onIrAMisPedidos={() => {
-          setPagoConfirmado(null);
-          onCambiarVista('MIS_PEDIDOS');
-        }}
-      />
+      {/* CHECKOUT EN 4 PASOS DENTRO DE DRAWER LATERAL DESLIZABLE (RNF12 / RN07) */}
+      {renderCheckoutDrawer()}
     </div>
   );
 };

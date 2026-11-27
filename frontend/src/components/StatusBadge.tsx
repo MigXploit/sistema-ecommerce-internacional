@@ -1,4 +1,5 @@
 import React from 'react';
+import { Lock } from 'lucide-react';
 
 interface StatusBadgeProps {
   estado: string;
@@ -63,6 +64,6 @@ export const StatusBadge: React.FC<StatusBadgeProps> = ({ estado, texto }) => {
 
 export const ImmutableTag: React.FC<{ label?: string }> = ({ label = 'INMUTABLE / SOLO LECTURA' }) => (
   <span className="immutable-pill" title="Registro protegido contra edición o borrado físico (RN16 / RN17 / RNF08)">
-    🔒 {label}
+    <Lock size={13} strokeWidth={2.2} /> {label}
   </span>
 );
